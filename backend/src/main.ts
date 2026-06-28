@@ -15,6 +15,7 @@ async function bootstrap(): Promise<void> {
       { path: '/', method: RequestMethod.GET },
       { path: 'health/database', method: RequestMethod.GET },
       { path: 'admin/auth/login', method: RequestMethod.POST },
+      { path: 'admin/auth/me', method: RequestMethod.GET },
     ],
   });
 
