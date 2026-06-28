@@ -1,0 +1,198 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum BillingType {
+  TRIAL
+  ONE_TIME
+  RECURRING
+}
+
+enum BillingInterval {
+  NONE
+  MONTHLY
+  YEARLY
+  CUSTOM
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  EXPIRED
+  CANCELED
+  LIFETIME
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+  SUPPORT
+}
+
+enum AdminStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum StoreStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+}
+
+enum IntegrationType {
+  PAYMENT
+  SMS
+  EMAIL
+  WHATSAPP
+  DELIVERY
+}
+
+model Admin {
+  id           String          @id @default(uuid()) @db.Uuid
+  fullName     String          @map("full_name")
+  email        String          @unique
+  passwordHash String          @map("password_hash")
+  role         AdminRole       @default(ADMIN)
+  status       AdminStatus     @default(ACTIVE)
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  auditLogs    AdminAuditLog[]
+
+  @@map("admins")
+}
+
+model Store {
+  id                        String                 @id @default(uuid()) @db.Uuid
+  storeName                 String                 @map("store_name")
+  storeSlug                 String                 @unique @map("store_slug")
+  ownerName                 String                 @map("owner_name")
+  ownerEmail                String                 @map("owner_email")
+  ownerPhone                String?                @map("owner_phone")
+  status                    StoreStatus            @default(TRIAL)
+  subscriptionPlanId        String?                @map("subscription_plan_id") @db.Uuid
+  databaseName              String?                @unique @map("database_name")
+  databaseHost              String?                @map("database_host")
+  databaseUser              String?                @map("database_user")
+  databasePasswordEncrypted String?                @map("database_password_encrypted")
+  logoUrl                   String?                @map("logo_url")
+  primaryColor              String?                @map("primary_color")
+  secondaryColor            String?                @map("secondary_color")
+  createdAt                 DateTime               @default(now()) @map("created_at")
+  updatedAt                 DateTime               @updatedAt @map("updated_at")
+  subscriptionPlan          SubscriptionPlan?      @relation(fields: [subscriptionPlanId], references: [id], onDelete: SetNull)
+  features                  StoreFeature[]
+  apiIntegrations           ApiIntegration[]
+  billingSubscriptions      BillingSubscription[]
+
+  @@map("stores")
+}
+
+model SubscriptionPlan {
+  id                   String                @id @default(uuid()) @db.Uuid
+  name                 String                @unique
+  price                Decimal               @db.Decimal(10, 2)
+  setupFee             Decimal               @default(0) @map("setup_fee") @db.Decimal(10, 2)
+  billingType          BillingType           @map("billing_type")
+  billingInterval      BillingInterval       @map("billing_interval")
+  intervalCount        Int                   @default(1) @map("interval_count")
+  trialDays            Int?                  @map("trial_days")
+  description          String?
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  stores               Store[]
+  features             PlanFeature[]
+  billingSubscriptions BillingSubscription[]
+
+  @@map("subscription_plans")
+}
+
+model PlanFeature {
+  id          String           @id @default(uuid()) @db.Uuid
+  planId      String           @map("plan_id") @db.Uuid
+  featureKey  String           @map("feature_key")
+  featureName String           @map("feature_name")
+  isEnabled   Boolean          @default(false) @map("is_enabled")
+  limitsJson  Json?            @map("limits_json")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  plan        SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureKey])
+  @@map("plan_features")
+}
+
+model StoreFeature {
+  id               String   @id @default(uuid()) @db.Uuid
+  storeId          String   @map("store_id") @db.Uuid
+  featureKey       String   @map("feature_key")
+  isEnabled        Boolean  @default(true) @map("is_enabled")
+  customLimitsJson Json?    @map("custom_limits_json")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  store            Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, featureKey])
+  @@map("store_features")
+}
+
+model ApiIntegration {
+  id                   String          @id @default(uuid()) @db.Uuid
+  storeId              String          @map("store_id") @db.Uuid
+  integrationType      IntegrationType @map("integration_type")
+  providerName         String          @map("provider_name")
+  isEnabled            Boolean         @default(false) @map("is_enabled")
+  credentialsEncrypted String?         @map("credentials_encrypted")
+  settingsJson         Json?           @map("settings_json")
+  createdAt            DateTime        @default(now()) @map("created_at")
+  updatedAt            DateTime        @updatedAt @map("updated_at")
+  store                Store           @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, integrationType])
+  @@map("api_integrations")
+}
+
+model BillingSubscription {
+  id        String             @id @default(uuid()) @db.Uuid
+  storeId   String             @map("store_id") @db.Uuid
+  planId    String             @map("plan_id") @db.Uuid
+  startDate DateTime           @map("start_date")
+  endDate   DateTime?          @map("end_date")
+  status    SubscriptionStatus @default(ACTIVE)
+  amount    Decimal            @db.Decimal(10, 2)
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+  store     Store              @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  plan      SubscriptionPlan   @relation(fields: [planId], references: [id])
+
+  @@index([storeId, status])
+  @@map("billing_subscriptions")
+}
+
+model AdminAuditLog {
+  id          String    @id @default(uuid()) @db.Uuid
+  adminId     String?   @map("admin_id") @db.Uuid
+  action      String
+  entityType  String    @map("entity_type")
+  entityId    String?   @map("entity_id")
+  detailsJson Json?     @map("details_json")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  admin       Admin?    @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([adminId])
+  @@index([entityType, entityId])
+  @@map("admin_audit_logs")
+}
