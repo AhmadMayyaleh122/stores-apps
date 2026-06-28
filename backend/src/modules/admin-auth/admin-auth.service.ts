@@ -25,10 +25,24 @@ export interface AdminLoginResponse {
   };
 }
 
-interface AdminJwtPayload {
+export interface AdminJwtPayload {
   sub: string;
   email: string;
   role: AdminRole;
+}
+
+export interface CurrentAdminResponse {
+  success: true;
+  message: string;
+  data: {
+    admin: {
+      id: string;
+      email: string;
+      fullName: string;
+      role: AdminRole;
+      status: AdminStatus;
+    };
+  };
 }
 
 @Injectable()
@@ -100,6 +114,42 @@ export class AdminAuthService {
         email: admin.email,
         role: admin.role,
         accessToken,
+      },
+    };
+  }
+
+  async getCurrentAdmin(
+    payload: AdminJwtPayload,
+  ): Promise<CurrentAdminResponse> {
+    const admin = await this.prismaService.admin.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        status: true,
+      },
+    });
+
+    if (!admin || admin.status !== AdminStatus.ACTIVE) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Invalid or expired admin token',
+      });
+    }
+
+    return {
+      success: true,
+      message: 'Current admin retrieved successfully',
+      data: {
+        admin: {
+          id: admin.id,
+          email: admin.email,
+          fullName: admin.fullName,
+          role: admin.role,
+          status: admin.status,
+        },
       },
     };
   }

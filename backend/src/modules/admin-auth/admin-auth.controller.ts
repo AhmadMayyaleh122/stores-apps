@@ -1,7 +1,14 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 
-import { AdminAuthService, AdminLoginResponse } from './admin-auth.service';
+import {
+  AdminAuthService,
+  AdminJwtPayload,
+  AdminLoginResponse,
+  CurrentAdminResponse,
+} from './admin-auth.service';
+import { CurrentAdmin } from './decorators/current-admin.decorator';
 import { AdminLoginDto } from './dto/admin-login.dto';
+import { AdminJwtAuthGuard } from './guards/admin-jwt-auth.guard';
 
 @Controller('admin/auth')
 export class AdminAuthController {
@@ -10,5 +17,13 @@ export class AdminAuthController {
   @Post('login')
   async login(@Body() loginDto: AdminLoginDto): Promise<AdminLoginResponse> {
     return this.adminAuthService.login(loginDto);
+  }
+
+  @Get('me')
+  @UseGuards(AdminJwtAuthGuard)
+  async getCurrentAdmin(
+    @CurrentAdmin() admin: AdminJwtPayload,
+  ): Promise<CurrentAdminResponse> {
+    return this.adminAuthService.getCurrentAdmin(admin);
   }
 }
