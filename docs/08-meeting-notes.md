@@ -267,6 +267,61 @@ Then continue with Prisma and Master Database setup if PostgreSQL is available.
 
 ---
 
+## 2026-06-29 - Backend database foundation
+
+### Decision
+
+Completed the backend database foundation for the Master Database.
+
+The completed work includes:
+
+* PostgreSQL was verified and the `white_label_master` database was created.
+* Prisma was installed and initialized.
+* The Master Database schema was created for:
+  * `admins`
+  * `stores`
+  * `subscription_plans`
+  * `plan_features`
+  * `store_features`
+  * `api_integrations`
+  * `billing_subscriptions`
+  * `admin_audit_logs`
+* The billing design was made flexible to support trial, one-time, monthly, yearly, and future setup-fee models.
+* The first Prisma migration was applied successfully:
+
+```txt
+init_master_schema
+```
+
+* Prisma Client was generated.
+* Prisma was integrated into NestJS using `PrismaService` and `DatabaseModule`.
+* A database health endpoint was added and tested successfully:
+
+```txt
+GET /health/database
+```
+
+* `@prisma/adapter-pg` and `pg` were installed because Prisma 7 requires a PostgreSQL adapter.
+* Git was initialized properly and the first commit was created:
+
+```txt
+e86c8e1 Initial white-label commerce foundation
+```
+
+### Reason
+
+The platform needs a stable Master Database before adding authentication, tenant management, store provisioning, billing, or mobile app integrations.
+
+### Impact
+
+The backend now has a working PostgreSQL and Prisma foundation, with the Master Database schema migrated, Prisma Client generated, NestJS database access configured, and a verified database health check endpoint.
+
+### Next Step
+
+Start the authentication and platform admin foundation.
+
+---
+
 ## YYYY-MM-DD - Topic
 
 ### Decision
