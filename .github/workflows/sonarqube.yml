@@ -1,0 +1,49 @@
+name: SonarQube
+
+on:
+  push:
+    branches:
+      - Ahmad
+  pull_request:
+    branches:
+      - Ahmad
+
+jobs:
+  sonarqube:
+    name: SonarQube Cloud Analysis
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci
+      ADMIN_JWT_SECRET: ci-admin-jwt-secret
+      ADMIN_JWT_EXPIRES_IN: 1d
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Generate Prisma client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
