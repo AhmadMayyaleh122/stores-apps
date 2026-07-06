@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 
 import { AdminJwtAuthGuard } from '../admin-auth/guards/admin-jwt-auth.guard';
 import {
@@ -29,7 +38,9 @@ export class AdminStoresController {
   }
 
   @Get(':id')
-  async getStoreById(@Param('id') id: string): Promise<AdminStoreResponse> {
+  async getStoreById(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<AdminStoreResponse> {
     return this.adminStoresService.getStoreById(id);
   }
 }

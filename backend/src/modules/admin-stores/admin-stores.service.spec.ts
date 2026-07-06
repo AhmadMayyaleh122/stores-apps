@@ -1,6 +1,10 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 
-import { StoreStatus } from '../../../generated/prisma/client';
+import { Prisma, StoreStatus } from '../../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AdminStoresService } from './admin-stores.service';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
@@ -60,6 +64,17 @@ describe('AdminStoresService', () => {
       ownerPhone: '+970599000000',
       ...overrides,
     };
+  }
+
+  function createPrismaKnownRequestError(
+    code: string,
+    meta?: Record<string, unknown>,
+  ): Prisma.PrismaClientKnownRequestError {
+    return new Prisma.PrismaClientKnownRequestError('Prisma error', {
+      code,
+      clientVersion: 'test',
+      meta,
+    });
   }
 
   it('creates a store successfully', async () => {
@@ -133,6 +148,50 @@ describe('AdminStoresService', () => {
       ConflictException,
     );
     expect(store.create).not.toHaveBeenCalled();
+  });
+
+  it('translates Prisma P2002 storeSlug races to ConflictException', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockRejectedValue(
+      createPrismaKnownRequestError('P2002', {
+        target: ['storeSlug'],
+      }),
+    );
+
+    await expect(service.createStore(createDto())).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
+
+  it('translates Prisma P2002 databaseName races to ConflictException', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockRejectedValue(
+      createPrismaKnownRequestError('P2002', {
+        target: ['database_name'],
+      }),
+    );
+
+    await expect(
+      service.createStore(createDto({ databaseName: 'demo_store' })),
+    ).rejects.toMatchObject({
+      response: {
+        success: false,
+        message: 'Store database name already exists',
+      },
+    });
+  });
+
+  it('translates Prisma P2003 relation failures to BadRequestException', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockRejectedValue(createPrismaKnownRequestError('P2003'));
+
+    await expect(
+      service.createStore(
+        createDto({
+          subscriptionPlanId: '4de3dc53-bceb-44e1-b94d-aab4f9a7b197',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('does not select sensitive database password fields', async () => {

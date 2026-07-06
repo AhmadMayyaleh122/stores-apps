@@ -1,3 +1,6 @@
+import { BadRequestException, ParseUUIDPipe } from '@nestjs/common';
+import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
+
 import { StoreStatus } from '../../../generated/prisma/client';
 import {
   AdminStoreResponse,
@@ -99,5 +102,27 @@ describe('AdminStoresController', () => {
       serviceResponse,
     );
     expect(adminStoresService.getStoreById).toHaveBeenCalledWith(store.id);
+  });
+
+  it('GET /admin/stores/:id validates id as a UUID', async () => {
+    const metadata = Reflect.getMetadata(
+      ROUTE_ARGS_METADATA,
+      AdminStoresController,
+      'getStoreById',
+    ) as Record<string, { data: string; pipes: unknown[] }>;
+    const idParam = Object.values(metadata).find(
+      (param) => param.data === 'id',
+    );
+    const uuidPipe = idParam?.pipes.find(
+      (pipe) => pipe instanceof ParseUUIDPipe,
+    ) as ParseUUIDPipe | undefined;
+
+    await expect(
+      uuidPipe?.transform('not-a-uuid', {
+        type: 'param',
+        metatype: String,
+        data: 'id',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });

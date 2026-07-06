@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -87,22 +88,7 @@ export class AdminStoresService {
       });
     }
 
-    const store = await this.prismaService.store.create({
-      data: {
-        storeName: createStoreDto.storeName,
-        storeSlug,
-        ownerName: createStoreDto.ownerName,
-        ownerEmail: createStoreDto.ownerEmail,
-        ownerPhone: createStoreDto.ownerPhone,
-        status: createStoreDto.status ?? StoreStatus.TRIAL,
-        subscriptionPlanId: createStoreDto.subscriptionPlanId,
-        databaseName: createStoreDto.databaseName,
-        logoUrl: createStoreDto.logoUrl,
-        primaryColor: createStoreDto.primaryColor,
-        secondaryColor: createStoreDto.secondaryColor,
-      },
-      select: adminStoreSelect,
-    });
+    const store = await this.createStoreRecord(createStoreDto, storeSlug);
 
     return {
       success: true,
@@ -111,6 +97,32 @@ export class AdminStoresService {
         store,
       },
     };
+  }
+
+  private async createStoreRecord(
+    createStoreDto: CreateAdminStoreDto,
+    storeSlug: string,
+  ): Promise<AdminStore> {
+    try {
+      return await this.prismaService.store.create({
+        data: {
+          storeName: createStoreDto.storeName,
+          storeSlug,
+          ownerName: createStoreDto.ownerName,
+          ownerEmail: createStoreDto.ownerEmail,
+          ownerPhone: createStoreDto.ownerPhone,
+          status: createStoreDto.status ?? StoreStatus.TRIAL,
+          subscriptionPlanId: createStoreDto.subscriptionPlanId,
+          databaseName: createStoreDto.databaseName,
+          logoUrl: createStoreDto.logoUrl,
+          primaryColor: createStoreDto.primaryColor,
+          secondaryColor: createStoreDto.secondaryColor,
+        },
+        select: adminStoreSelect,
+      });
+    } catch (error) {
+      this.handleStoreCreateError(error);
+    }
   }
 
   async listStores(
@@ -176,5 +188,42 @@ export class AdminStoresService {
     }
 
     return where;
+  }
+
+  private handleStoreCreateError(error: unknown): never {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === 'P2002') {
+        throw new ConflictException({
+          success: false,
+          message: this.getUniqueConflictMessage(error),
+        });
+      }
+
+      if (error.code === 'P2003') {
+        throw new BadRequestException({
+          success: false,
+          message: 'Invalid subscription plan id',
+        });
+      }
+    }
+
+    throw error;
+  }
+
+  private getUniqueConflictMessage(
+    error: Prisma.PrismaClientKnownRequestError,
+  ): string {
+    const target = error.meta?.target;
+    const targetFields = Array.isArray(target) ? target : [target];
+
+    if (
+      targetFields.some(
+        (field) => field === 'databaseName' || field === 'database_name',
+      )
+    ) {
+      return 'Store database name already exists';
+    }
+
+    return 'Store slug already exists';
   }
 }
