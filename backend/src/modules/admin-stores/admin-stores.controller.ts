@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -17,6 +18,8 @@ import {
 } from './admin-stores.service';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
 import { ListAdminStoresQueryDto } from './dto/list-admin-stores-query.dto';
+import { UpdateAdminStoreDto } from './dto/update-admin-store.dto';
+import { UpdateAdminStoreStatusDto } from './dto/update-admin-store-status.dto';
 
 @Controller('admin/stores')
 @UseGuards(AdminJwtAuthGuard)
@@ -42,5 +45,24 @@ export class AdminStoresController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
   ): Promise<AdminStoreResponse> {
     return this.adminStoresService.getStoreById(id);
+  }
+
+  @Patch(':id')
+  async updateStore(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() updateStoreDto: UpdateAdminStoreDto,
+  ): Promise<AdminStoreResponse> {
+    return this.adminStoresService.updateStore(id, updateStoreDto);
+  }
+
+  @Patch(':id/status')
+  async updateStoreStatus(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() updateStoreStatusDto: UpdateAdminStoreStatusDto,
+  ): Promise<AdminStoreResponse> {
+    return this.adminStoresService.updateStoreStatus(
+      id,
+      updateStoreStatusDto,
+    );
   }
 }
