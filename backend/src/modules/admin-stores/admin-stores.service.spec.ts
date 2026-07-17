@@ -15,6 +15,7 @@ type MockPrismaStore = {
   create: jest.Mock;
   findMany: jest.Mock;
   findUnique: jest.Mock;
+  update: jest.Mock;
 };
 
 describe('AdminStoresService', () => {
@@ -46,6 +47,7 @@ describe('AdminStoresService', () => {
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      update: jest.fn(),
     };
 
     service = new AdminStoresService({
@@ -288,5 +290,179 @@ describe('AdminStoresService', () => {
     await expect(service.getStoreById(baseStore.id)).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+
+  it('updates a store successfully', async () => {
+    const updatedStore = {
+      ...baseStore,
+      storeName: 'Demo Store Updated',
+      ownerPhone: '+970599111111',
+      primaryColor: '#0F766E',
+      secondaryColor: '#111827',
+    };
+    store.findUnique.mockResolvedValue({
+      id: baseStore.id,
+      storeSlug: baseStore.storeSlug,
+      databaseName: baseStore.databaseName,
+    });
+    store.findFirst.mockResolvedValue(null);
+    store.update.mockResolvedValue(updatedStore);
+
+    const response = await service.updateStore(baseStore.id, {
+      storeName: 'Demo Store Updated',
+      ownerPhone: '+970599111111',
+      primaryColor: '#0F766E',
+      secondaryColor: '#111827',
+    });
+
+    expect(store.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: baseStore.id,
+        },
+        data: {
+          storeName: 'Demo Store Updated',
+          ownerPhone: '+970599111111',
+          primaryColor: '#0F766E',
+          secondaryColor: '#111827',
+        },
+      }),
+    );
+    expect(response).toEqual({
+      success: true,
+      message: 'Store updated successfully',
+      data: {
+        store: updatedStore,
+      },
+    });
+  });
+
+  it('rejects an empty store update body', async () => {
+    await expect(service.updateStore(baseStore.id, {})).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(store.findUnique).not.toHaveBeenCalled();
+    expect(store.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a store update when the store is missing', async () => {
+    store.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.updateStore(baseStore.id, {
+        storeName: 'Demo Store Updated',
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(store.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate storeSlug on update', async () => {
+    store.findUnique.mockResolvedValue({
+      id: baseStore.id,
+      storeSlug: baseStore.storeSlug,
+      databaseName: baseStore.databaseName,
+    });
+    store.findFirst.mockResolvedValue({
+      storeSlug: 'taken-store',
+      databaseName: null,
+    });
+
+    await expect(
+      service.updateStore(baseStore.id, {
+        storeSlug: 'TAKEN-STORE',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(store.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: {
+            not: baseStore.id,
+          },
+          OR: [{ storeSlug: 'taken-store' }],
+        },
+      }),
+    );
+    expect(store.update).not.toHaveBeenCalled();
+  });
+
+  it('translates Prisma P2002 update races to ConflictException', async () => {
+    store.findUnique.mockResolvedValue({
+      id: baseStore.id,
+      storeSlug: baseStore.storeSlug,
+      databaseName: baseStore.databaseName,
+    });
+    store.findFirst.mockResolvedValue(null);
+    store.update.mockRejectedValue(
+      createPrismaKnownRequestError('P2002', {
+        target: ['storeSlug'],
+      }),
+    );
+
+    await expect(
+      service.updateStore(baseStore.id, {
+        storeSlug: 'updated-store',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('translates Prisma P2003 update failures to BadRequestException', async () => {
+    store.findUnique.mockResolvedValue({
+      id: baseStore.id,
+      storeSlug: baseStore.storeSlug,
+      databaseName: baseStore.databaseName,
+    });
+    store.update.mockRejectedValue(createPrismaKnownRequestError('P2003'));
+
+    await expect(
+      service.updateStore(baseStore.id, {
+        subscriptionPlanId: '4de3dc53-bceb-44e1-b94d-aab4f9a7b197',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('updates store status successfully', async () => {
+    const updatedStore = {
+      ...baseStore,
+      status: StoreStatus.ACTIVE,
+    };
+    store.findUnique.mockResolvedValue({
+      id: baseStore.id,
+      storeSlug: baseStore.storeSlug,
+      databaseName: baseStore.databaseName,
+    });
+    store.update.mockResolvedValue(updatedStore);
+
+    const response = await service.updateStoreStatus(baseStore.id, {
+      status: StoreStatus.ACTIVE,
+    });
+
+    expect(store.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: baseStore.id,
+        },
+        data: {
+          status: StoreStatus.ACTIVE,
+        },
+      }),
+    );
+    expect(response).toEqual({
+      success: true,
+      message: 'Store status updated successfully',
+      data: {
+        store: updatedStore,
+      },
+    });
+  });
+
+  it('rejects status update when the store is missing', async () => {
+    store.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.updateStoreStatus(baseStore.id, {
+        status: StoreStatus.ACTIVE,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(store.update).not.toHaveBeenCalled();
   });
 });
