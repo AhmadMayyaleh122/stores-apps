@@ -1,9 +1,21 @@
 import { BadRequestException, ParseUUIDPipe } from '@nestjs/common';
-import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
+import {
+  GUARDS_METADATA,
+  ROUTE_ARGS_METADATA,
+} from '@nestjs/common/constants';
 
-import { StoreStatus } from '../../../generated/prisma/client';
+import {
+  BillingInterval,
+  BillingType,
+  Prisma,
+  StoreStatus,
+  SubscriptionStatus,
+} from '../../../generated/prisma/client';
+import { AdminJwtAuthGuard } from '../admin-auth/guards/admin-jwt-auth.guard';
 import {
   AdminStoreResponse,
+  AdminStoreSubscriptionResponse,
+  AdminStoreSubscriptionsListResponse,
   AdminStoresListResponse,
   AdminStoresService,
 } from './admin-stores.service';
@@ -23,6 +35,10 @@ describe('AdminStoresController', () => {
       | 'getStoreById'
       | 'updateStore'
       | 'updateStoreStatus'
+      | 'getCurrentStoreSubscription'
+      | 'listStoreSubscriptions'
+      | 'createStoreSubscription'
+      | 'startStoreTrial'
     >
   >;
 
@@ -50,6 +66,10 @@ describe('AdminStoresController', () => {
       getStoreById: jest.fn(),
       updateStore: jest.fn(),
       updateStoreStatus: jest.fn(),
+      getCurrentStoreSubscription: jest.fn(),
+      listStoreSubscriptions: jest.fn(),
+      createStoreSubscription: jest.fn(),
+      startStoreTrial: jest.fn(),
     };
 
     controller = new AdminStoresController(
@@ -178,11 +198,144 @@ describe('AdminStoresController', () => {
     await expectUuidPipeRejectsInvalidId('updateStoreStatus');
   });
 
+  it('keeps AdminJwtAuthGuard applied to the controller', () => {
+    const guards = Reflect.getMetadata(
+      GUARDS_METADATA,
+      AdminStoresController,
+    ) as unknown[];
+
+    expect(guards).toContain(AdminJwtAuthGuard);
+  });
+
+  it('GET /admin/stores/:storeId/subscription delegates and forwards the response', async () => {
+    const serviceResponse = createSubscriptionResponse(
+      'Current store subscription retrieved successfully',
+    );
+    adminStoresService.getCurrentStoreSubscription.mockResolvedValue(
+      serviceResponse,
+    );
+
+    await expect(
+      controller.getCurrentStoreSubscription(store.id),
+    ).resolves.toEqual(serviceResponse);
+    expect(
+      adminStoresService.getCurrentStoreSubscription,
+    ).toHaveBeenCalledWith(store.id);
+  });
+
+  it('GET /admin/stores/:storeId/subscriptions forwards query and response', async () => {
+    const query = { status: SubscriptionStatus.EXPIRED };
+    const subscriptionResponse = createSubscriptionResponse('unused');
+    const serviceResponse: AdminStoreSubscriptionsListResponse = {
+      success: true,
+      message: 'Store subscription history retrieved successfully',
+      data: {
+        subscriptions: [subscriptionResponse.data.subscription],
+      },
+    };
+    adminStoresService.listStoreSubscriptions.mockResolvedValue(
+      serviceResponse,
+    );
+
+    await expect(
+      controller.listStoreSubscriptions(store.id, query),
+    ).resolves.toEqual(serviceResponse);
+    expect(adminStoresService.listStoreSubscriptions).toHaveBeenCalledWith(
+      store.id,
+      query,
+    );
+  });
+
+  it('POST /admin/stores/:storeId/subscriptions forwards DTO and response', async () => {
+    const dto = {
+      planId: 'b538a21d-edca-45ac-8869-8da0f07e6845',
+      startDate: '2026-07-17T10:00:00.000Z',
+    };
+    const serviceResponse = createSubscriptionResponse(
+      'Store subscription created successfully',
+    );
+    adminStoresService.createStoreSubscription.mockResolvedValue(
+      serviceResponse,
+    );
+
+    await expect(
+      controller.createStoreSubscription(store.id, dto),
+    ).resolves.toEqual(serviceResponse);
+    expect(adminStoresService.createStoreSubscription).toHaveBeenCalledWith(
+      store.id,
+      dto,
+    );
+  });
+
+  it('POST /admin/stores/:storeId/subscriptions/trial forwards DTO and response', async () => {
+    const dto = {
+      planId: 'b538a21d-edca-45ac-8869-8da0f07e6845',
+      trialDays: 14,
+    };
+    const serviceResponse = createSubscriptionResponse(
+      'Store trial started successfully',
+    );
+    adminStoresService.startStoreTrial.mockResolvedValue(serviceResponse);
+
+    await expect(controller.startStoreTrial(store.id, dto)).resolves.toEqual(
+      serviceResponse,
+    );
+    expect(adminStoresService.startStoreTrial).toHaveBeenCalledWith(
+      store.id,
+      dto,
+    );
+  });
+
+  it.each([
+    'getCurrentStoreSubscription',
+    'listStoreSubscriptions',
+    'createStoreSubscription',
+    'startStoreTrial',
+  ] as const)('%s validates storeId as a UUID', async (methodName) => {
+    await expectUuidPipeRejectsInvalidId(methodName, 'storeId');
+  });
+
+  function createSubscriptionResponse(
+    message: string,
+  ): AdminStoreSubscriptionResponse {
+    return {
+      success: true,
+      message,
+      data: {
+        subscription: {
+          id: '5eb2ae2d-67c7-4ab2-b411-9ab0bcaee208',
+          storeId: store.id,
+          planId: 'b538a21d-edca-45ac-8869-8da0f07e6845',
+          startDate: new Date('2026-07-17T10:00:00.000Z'),
+          endDate: new Date('2026-08-17T10:00:00.000Z'),
+          status: SubscriptionStatus.ACTIVE,
+          isTrial: false,
+          amount: new Prisma.Decimal('29.99'),
+          createdAt: new Date('2026-07-17T10:00:00.000Z'),
+          updatedAt: new Date('2026-07-17T10:00:00.000Z'),
+          plan: {
+            id: 'b538a21d-edca-45ac-8869-8da0f07e6845',
+            name: 'Monthly',
+            billingType: BillingType.RECURRING,
+            billingInterval: BillingInterval.MONTHLY,
+            intervalCount: 1,
+            trialDays: 14,
+          },
+        },
+      },
+    };
+  }
+
   async function expectUuidPipeRejectsInvalidId(
     methodName:
       | 'getStoreById'
       | 'updateStore'
-      | 'updateStoreStatus',
+      | 'updateStoreStatus'
+      | 'getCurrentStoreSubscription'
+      | 'listStoreSubscriptions'
+      | 'createStoreSubscription'
+      | 'startStoreTrial',
+    parameterName = 'id',
   ): Promise<void> {
     const metadata = Reflect.getMetadata(
       ROUTE_ARGS_METADATA,
@@ -190,7 +343,7 @@ describe('AdminStoresController', () => {
       methodName,
     ) as Record<string, { data: string; pipes: unknown[] }>;
     const idParam = Object.values(metadata).find(
-      (param) => param.data === 'id',
+      (param) => param.data === parameterName,
     );
     const uuidPipe = idParam?.pipes.find(
       (pipe) => pipe instanceof ParseUUIDPipe,

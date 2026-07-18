@@ -4,11 +4,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { Prisma, StoreStatus } from '../../../generated/prisma/client';
+import {
+  BillingInterval,
+  BillingType,
+  Prisma,
+  StoreStatus,
+  SubscriptionStatus,
+} from '../../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AdminStoresService } from './admin-stores.service';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
 import { ListAdminStoresQueryDto } from './dto/list-admin-stores-query.dto';
+import { UpdateAdminStoreDto } from './dto/update-admin-store.dto';
 
 type MockPrismaStore = {
   findFirst: jest.Mock;
@@ -183,19 +190,6 @@ describe('AdminStoresService', () => {
     });
   });
 
-  it('translates Prisma P2003 relation failures to BadRequestException', async () => {
-    store.findFirst.mockResolvedValue(null);
-    store.create.mockRejectedValue(createPrismaKnownRequestError('P2003'));
-
-    await expect(
-      service.createStore(
-        createDto({
-          subscriptionPlanId: '4de3dc53-bceb-44e1-b94d-aab4f9a7b197',
-        }),
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
-
   it('does not select sensitive database password fields', async () => {
     store.findFirst.mockResolvedValue(null);
     store.create.mockResolvedValue(baseStore);
@@ -206,6 +200,21 @@ describe('AdminStoresService', () => {
     expect(createArgs.select.databasePasswordEncrypted).toBeUndefined();
     expect(response.data.store).not.toHaveProperty(
       'databasePasswordEncrypted',
+    );
+  });
+
+  it('does not assign subscriptionPlanId during general store creation', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    const dto = {
+      ...createDto(),
+      subscriptionPlanId: 'b538a21d-edca-45ac-8869-8da0f07e6845',
+    } as CreateAdminStoreDto;
+
+    await service.createStore(dto);
+
+    expect(store.create.mock.calls[0][0].data).not.toHaveProperty(
+      'subscriptionPlanId',
     );
   });
 
@@ -405,19 +414,22 @@ describe('AdminStoresService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('translates Prisma P2003 update failures to BadRequestException', async () => {
+  it('does not modify subscriptionPlanId during general store updates', async () => {
     store.findUnique.mockResolvedValue({
       id: baseStore.id,
       storeSlug: baseStore.storeSlug,
       databaseName: baseStore.databaseName,
     });
-    store.update.mockRejectedValue(createPrismaKnownRequestError('P2003'));
+    store.update.mockResolvedValue(baseStore);
 
-    await expect(
-      service.updateStore(baseStore.id, {
-        subscriptionPlanId: '4de3dc53-bceb-44e1-b94d-aab4f9a7b197',
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await service.updateStore(baseStore.id, {
+      storeName: 'Updated Store',
+      subscriptionPlanId: 'b538a21d-edca-45ac-8869-8da0f07e6845',
+    } as UpdateAdminStoreDto);
+
+    expect(store.update.mock.calls[0][0].data).toEqual({
+      storeName: 'Updated Store',
+    });
   });
 
   it('updates store status successfully', async () => {
@@ -464,5 +476,683 @@ describe('AdminStoresService', () => {
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(store.update).not.toHaveBeenCalled();
+  });
+
+  describe('subscription management', () => {
+    const storeId = '4de3dc53-bceb-44e1-b94d-aab4f9a7b197';
+    const planId = 'b538a21d-edca-45ac-8869-8da0f07e6845';
+    const subscriptionId = '5eb2ae2d-67c7-4ab2-b411-9ab0bcaee208';
+    const startDate = new Date('2026-07-17T10:00:00.000Z');
+    const monthlyEndDate = new Date('2026-08-17T10:00:00.000Z');
+    let subscriptionPlanFindUnique: jest.Mock;
+    let billingSubscriptionFindFirst: jest.Mock;
+    let billingSubscriptionFindMany: jest.Mock;
+    let transactionSubscriptionCreate: jest.Mock;
+    let transactionStoreUpdate: jest.Mock;
+    let transaction: jest.Mock;
+
+    const recurringPlan = {
+      id: planId,
+      price: new Prisma.Decimal('29.99'),
+      billingType: BillingType.RECURRING,
+      billingInterval: BillingInterval.MONTHLY,
+      intervalCount: 1,
+      trialDays: 14,
+    };
+
+    function subscription(overrides: Record<string, unknown> = {}) {
+      return {
+        id: subscriptionId,
+        storeId,
+        planId,
+        startDate,
+        endDate: monthlyEndDate,
+        status: SubscriptionStatus.ACTIVE,
+        isTrial: false,
+        amount: recurringPlan.price,
+        createdAt: startDate,
+        updatedAt: startDate,
+        plan: {
+          id: planId,
+          name: 'Monthly',
+          billingType: BillingType.RECURRING,
+          billingInterval: BillingInterval.MONTHLY,
+          intervalCount: 1,
+          trialDays: 14,
+        },
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      store.findUnique.mockResolvedValue({ id: storeId });
+      subscriptionPlanFindUnique = jest.fn().mockResolvedValue(recurringPlan);
+      billingSubscriptionFindFirst = jest.fn().mockResolvedValue(null);
+      billingSubscriptionFindMany = jest.fn().mockResolvedValue([]);
+      transactionSubscriptionCreate = jest
+        .fn()
+        .mockResolvedValue(subscription());
+      transactionStoreUpdate = jest.fn().mockResolvedValue({ id: storeId });
+      transaction = jest.fn(async (callback: (client: unknown) => unknown) =>
+        callback({
+          billingSubscription: { create: transactionSubscriptionCreate },
+          store: { update: transactionStoreUpdate },
+        }),
+      );
+
+      service = new AdminStoresService({
+        store,
+        subscriptionPlan: { findUnique: subscriptionPlanFindUnique },
+        billingSubscription: {
+          findFirst: billingSubscriptionFindFirst,
+          findMany: billingSubscriptionFindMany,
+        },
+        $transaction: transaction,
+      } as unknown as PrismaService);
+    });
+
+    it('rejects normal subscription creation when the store is missing', async () => {
+      store.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createStoreSubscription(storeId, { planId }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(subscriptionPlanFindUnique).not.toHaveBeenCalled();
+    });
+
+    it('rejects normal subscription creation when the plan is missing', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createStoreSubscription(storeId, { planId }),
+      ).rejects.toMatchObject({
+        response: {
+          success: false,
+          message: 'Subscription plan not found',
+        },
+      });
+    });
+
+    it('rejects trial plans on the normal subscription endpoint', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingType: BillingType.TRIAL,
+      });
+
+      await expect(
+        service.createStoreSubscription(storeId, { planId }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a normal subscription when a current subscription exists', async () => {
+      billingSubscriptionFindFirst.mockResolvedValue({ id: subscriptionId });
+
+      await expect(
+        service.createStoreSubscription(storeId, { planId }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a custom interval without endDate', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingInterval: BillingInterval.CUSTOM,
+      });
+
+      await expect(
+        service.createStoreSubscription(storeId, {
+          planId,
+          startDate: startDate.toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects an invalid normal subscription date range', async () => {
+      await expect(
+        service.createStoreSubscription(storeId, {
+          planId,
+          startDate: startDate.toISOString(),
+          endDate: startDate.toISOString(),
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          message: 'endDate must be strictly later than startDate',
+        },
+      });
+    });
+
+    it('rejects a recurring plan with a NONE interval', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingInterval: BillingInterval.NONE,
+      });
+
+      await expect(
+        service.createStoreSubscription(storeId, { planId }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('derives a monthly endDate using calendar months', async () => {
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            endDate: monthlyEndDate,
+          }),
+        }),
+      );
+    });
+
+    it('clamps January 31 to February 28 for a monthly subscription', async () => {
+      const january31 = new Date('2025-01-31T16:45:30.000Z');
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: january31.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            startDate: january31,
+            endDate: new Date('2025-02-28T16:45:30.000Z'),
+          }),
+        }),
+      );
+    });
+
+    it('clamps January 31 to February 29 in a leap year', async () => {
+      const january31 = new Date('2024-01-31T16:45:30.000Z');
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: january31.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            startDate: january31,
+            endDate: new Date('2024-02-29T16:45:30.000Z'),
+          }),
+        }),
+      );
+    });
+
+    it('supports monthly intervalCount greater than one without mutating startDate', async () => {
+      const january31 = new Date('2025-01-31T16:45:30.000Z');
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        intervalCount: 2,
+      });
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: january31.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            startDate: january31,
+            endDate: new Date('2025-03-31T16:45:30.000Z'),
+          }),
+        }),
+      );
+      expect(january31).toEqual(new Date('2025-01-31T16:45:30.000Z'));
+    });
+
+    it('derives a yearly endDate using calendar years', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingInterval: BillingInterval.YEARLY,
+        intervalCount: 2,
+      });
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            endDate: new Date('2028-07-17T10:00:00.000Z'),
+          }),
+        }),
+      );
+    });
+
+    it('clamps February 29 to February 28 in a non-leap year', async () => {
+      const leapDay = new Date('2024-02-29T08:15:00.000Z');
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingInterval: BillingInterval.YEARLY,
+        intervalCount: 1,
+      });
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: leapDay.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            startDate: leapDay,
+            endDate: new Date('2025-02-28T08:15:00.000Z'),
+          }),
+        }),
+      );
+    });
+
+    it('creates a custom-period subscription with the requested dates', async () => {
+      const customEndDate = new Date('2026-10-01T10:00:00.000Z');
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingInterval: BillingInterval.CUSTOM,
+      });
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+        endDate: customEndDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            startDate,
+            endDate: customEndDate,
+            status: SubscriptionStatus.ACTIVE,
+          }),
+        }),
+      );
+    });
+
+    it('creates a one-time NONE subscription as lifetime', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingType: BillingType.ONE_TIME,
+        billingInterval: BillingInterval.NONE,
+      });
+
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            endDate: null,
+            status: SubscriptionStatus.LIFETIME,
+          }),
+        }),
+      );
+    });
+
+    it('copies the plan price and marks a normal subscription as non-trial', async () => {
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            amount: recurringPlan.price,
+            isTrial: false,
+          }),
+        }),
+      );
+    });
+
+    it('creates the subscription and updates the store in one transaction', async () => {
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(transactionSubscriptionCreate).toHaveBeenCalledTimes(1);
+      expect(store.update).not.toHaveBeenCalled();
+      expect(transactionStoreUpdate).toHaveBeenCalledWith({
+        where: { id: storeId },
+        data: {
+          subscriptionPlanId: planId,
+          status: StoreStatus.ACTIVE,
+        },
+        select: { id: true },
+      });
+    });
+
+    it('uses an explicit subscription response projection without Store data', async () => {
+      await service.createStoreSubscription(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      const select = transactionSubscriptionCreate.mock.calls[0][0].select;
+      expect(select).toEqual({
+        id: true,
+        storeId: true,
+        planId: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+        isTrial: true,
+        amount: true,
+        createdAt: true,
+        updatedAt: true,
+        plan: {
+          select: {
+            id: true,
+            name: true,
+            billingType: true,
+            billingInterval: true,
+            intervalCount: true,
+            trialDays: true,
+          },
+        },
+      });
+      expect(select).not.toHaveProperty('store');
+    });
+
+    it('translates a partial unique-index race to ConflictException', async () => {
+      transaction.mockRejectedValue(
+        createPrismaKnownRequestError('P2002', {
+          target: ['store_id'],
+        }),
+      );
+
+      await expect(
+        service.createStoreSubscription(storeId, {
+          planId,
+          startDate: startDate.toISOString(),
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          success: false,
+          message: 'Store already has a current operational subscription',
+        },
+      });
+    });
+
+    it('does not misclassify unrelated P2002 errors as current-subscription conflicts', async () => {
+      transaction.mockRejectedValue(
+        createPrismaKnownRequestError('P2002', {
+          target: ['id'],
+        }),
+      );
+
+      await expect(
+        service.createStoreSubscription(storeId, {
+          planId,
+          startDate: startDate.toISOString(),
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          success: false,
+          message: 'Subscription already exists',
+        },
+      });
+    });
+
+    it('rejects trial creation when the store is missing', async () => {
+      store.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.startStoreTrial(storeId, { planId, trialDays: 7 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rejects trial creation when the plan is missing', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.startStoreTrial(storeId, { planId, trialDays: 7 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rejects a trial-ineligible plan', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        trialDays: null,
+      });
+
+      await expect(
+        service.startStoreTrial(storeId, { planId, trialDays: 7 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects trial requests with both endDate and trialDays', async () => {
+      await expect(
+        service.startStoreTrial(storeId, {
+          planId,
+          endDate: monthlyEndDate.toISOString(),
+          trialDays: 7,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a trial when no duration is available', async () => {
+      subscriptionPlanFindUnique.mockResolvedValue({
+        ...recurringPlan,
+        billingType: BillingType.TRIAL,
+        trialDays: null,
+      });
+
+      await expect(
+        service.startStoreTrial(storeId, { planId }),
+      ).rejects.toMatchObject({
+        response: {
+          message: 'A positive trial duration is required',
+        },
+      });
+    });
+
+    it('rejects an invalid trial date range', async () => {
+      await expect(
+        service.startStoreTrial(storeId, {
+          planId,
+          startDate: startDate.toISOString(),
+          endDate: startDate.toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a repeated trial', async () => {
+      billingSubscriptionFindFirst.mockResolvedValueOnce({
+        id: subscriptionId,
+      });
+
+      await expect(
+        service.startStoreTrial(storeId, { planId, trialDays: 7 }),
+      ).rejects.toMatchObject({
+        response: {
+          message: 'Store has already used a trial subscription',
+        },
+      });
+    });
+
+    it('rejects a trial when a current subscription exists', async () => {
+      billingSubscriptionFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: subscriptionId });
+
+      await expect(
+        service.startStoreTrial(storeId, { planId, trialDays: 7 }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('uses plan trialDays by default', async () => {
+      await service.startStoreTrial(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            endDate: new Date('2026-07-31T10:00:00.000Z'),
+          }),
+        }),
+      );
+    });
+
+    it('uses request trialDays instead of the plan default', async () => {
+      await service.startStoreTrial(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+        trialDays: 5,
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            endDate: new Date('2026-07-22T10:00:00.000Z'),
+          }),
+        }),
+      );
+    });
+
+    it('uses an explicit trial endDate', async () => {
+      await service.startStoreTrial(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+        endDate: monthlyEndDate.toISOString(),
+      });
+
+      expect(transactionSubscriptionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            endDate: monthlyEndDate,
+          }),
+        }),
+      );
+    });
+
+    it('creates a zero-amount trial marked with isTrial', async () => {
+      await service.startStoreTrial(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      const data = transactionSubscriptionCreate.mock.calls[0][0].data;
+      expect(data.amount.toString()).toBe('0');
+      expect(data).toEqual(
+        expect.objectContaining({
+          isTrial: true,
+          status: SubscriptionStatus.TRIALING,
+        }),
+      );
+    });
+
+    it('updates Store status to TRIAL in the trial transaction', async () => {
+      await service.startStoreTrial(storeId, {
+        planId,
+        startDate: startDate.toISOString(),
+      });
+
+      expect(transactionStoreUpdate).toHaveBeenCalledWith({
+        where: { id: storeId },
+        data: {
+          subscriptionPlanId: planId,
+          status: StoreStatus.TRIAL,
+        },
+        select: { id: true },
+      });
+    });
+
+    it('translates a trial partial unique-index race to ConflictException', async () => {
+      transaction.mockRejectedValue(
+        createPrismaKnownRequestError('P2002', {
+          constraint: 'billing_subscriptions_one_current_per_store_uidx',
+        }),
+      );
+
+      await expect(
+        service.startStoreTrial(storeId, {
+          planId,
+          startDate: startDate.toISOString(),
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('returns the current operational subscription', async () => {
+      const currentSubscription = subscription();
+      billingSubscriptionFindFirst.mockResolvedValue(currentSubscription);
+
+      await expect(
+        service.getCurrentStoreSubscription(storeId),
+      ).resolves.toEqual({
+        success: true,
+        message: 'Current store subscription retrieved successfully',
+        data: { subscription: currentSubscription },
+      });
+      expect(billingSubscriptionFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            storeId,
+            status: {
+              in: [
+                SubscriptionStatus.TRIALING,
+                SubscriptionStatus.ACTIVE,
+                SubscriptionStatus.PAST_DUE,
+                SubscriptionStatus.LIFETIME,
+              ],
+            },
+          },
+        }),
+      );
+    });
+
+    it('returns 404 when the current subscription is missing', async () => {
+      await expect(
+        service.getCurrentStoreSubscription(storeId),
+      ).rejects.toMatchObject({
+        response: {
+          message: 'Current store subscription not found',
+        },
+      });
+    });
+
+    it('lists subscription history in the required order', async () => {
+      const subscriptions = [subscription()];
+      billingSubscriptionFindMany.mockResolvedValue(subscriptions);
+
+      await expect(service.listStoreSubscriptions(storeId, {})).resolves.toEqual(
+        {
+          success: true,
+          message: 'Store subscription history retrieved successfully',
+          data: { subscriptions },
+        },
+      );
+      expect(billingSubscriptionFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
+        }),
+      );
+    });
+
+    it('filters subscription history by status', async () => {
+      await service.listStoreSubscriptions(storeId, {
+        status: SubscriptionStatus.EXPIRED,
+      });
+
+      expect(billingSubscriptionFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            storeId,
+            status: SubscriptionStatus.EXPIRED,
+          },
+        }),
+      );
+    });
   });
 });

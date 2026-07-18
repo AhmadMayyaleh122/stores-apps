@@ -4,7 +4,6 @@ import {
   IsOptional,
   IsString,
   IsUrl,
-  IsUUID,
   Matches,
   MaxLength,
   MinLength,
@@ -57,10 +56,6 @@ export class UpdateAdminStoreDto {
     typeof value === 'string' ? value.trim() : value,
   )
   ownerPhone?: string;
-
-  @IsOptional()
-  @IsUUID()
-  subscriptionPlanId?: string;
 
   @IsOptional()
   @IsString()
