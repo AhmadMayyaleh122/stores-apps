@@ -76,24 +76,24 @@ model Admin {
 }
 
 model Store {
-  id                        String                 @id @default(uuid()) @db.Uuid
-  storeName                 String                 @map("store_name")
-  storeSlug                 String                 @unique @map("store_slug")
-  ownerName                 String                 @map("owner_name")
-  ownerEmail                String                 @map("owner_email")
-  ownerPhone                String?                @map("owner_phone")
-  status                    StoreStatus            @default(TRIAL)
-  subscriptionPlanId        String?                @map("subscription_plan_id") @db.Uuid
-  databaseName              String?                @unique @map("database_name")
-  databaseHost              String?                @map("database_host")
-  databaseUser              String?                @map("database_user")
-  databasePasswordEncrypted String?                @map("database_password_encrypted")
-  logoUrl                   String?                @map("logo_url")
-  primaryColor              String?                @map("primary_color")
-  secondaryColor            String?                @map("secondary_color")
-  createdAt                 DateTime               @default(now()) @map("created_at")
-  updatedAt                 DateTime               @updatedAt @map("updated_at")
-  subscriptionPlan          SubscriptionPlan?      @relation(fields: [subscriptionPlanId], references: [id], onDelete: SetNull)
+  id                        String                @id @default(uuid()) @db.Uuid
+  storeName                 String                @map("store_name")
+  storeSlug                 String                @unique @map("store_slug")
+  ownerName                 String                @map("owner_name")
+  ownerEmail                String                @map("owner_email")
+  ownerPhone                String?               @map("owner_phone")
+  status                    StoreStatus           @default(TRIAL)
+  subscriptionPlanId        String?               @map("subscription_plan_id") @db.Uuid
+  databaseName              String?               @unique @map("database_name")
+  databaseHost              String?               @map("database_host")
+  databaseUser              String?               @map("database_user")
+  databasePasswordEncrypted String?               @map("database_password_encrypted")
+  logoUrl                   String?               @map("logo_url")
+  primaryColor              String?               @map("primary_color")
+  secondaryColor            String?               @map("secondary_color")
+  createdAt                 DateTime              @default(now()) @map("created_at")
+  updatedAt                 DateTime              @updatedAt @map("updated_at")
+  subscriptionPlan          SubscriptionPlan?     @relation(fields: [subscriptionPlanId], references: [id], onDelete: SetNull)
   features                  StoreFeature[]
   apiIntegrations           ApiIntegration[]
   billingSubscriptions      BillingSubscription[]
@@ -172,6 +172,7 @@ model BillingSubscription {
   startDate DateTime           @map("start_date")
   endDate   DateTime?          @map("end_date")
   status    SubscriptionStatus @default(ACTIVE)
+  isTrial   Boolean            @default(false) @map("is_trial")
   amount    Decimal            @db.Decimal(10, 2)
   createdAt DateTime           @default(now()) @map("created_at")
   updatedAt DateTime           @updatedAt @map("updated_at")
@@ -179,18 +180,21 @@ model BillingSubscription {
   plan      SubscriptionPlan   @relation(fields: [planId], references: [id])
 
   @@index([storeId, status])
+  @@index([storeId, startDate], map: "billing_subscriptions_store_id_start_date_idx")
+  @@index([storeId, endDate], map: "billing_subscriptions_store_id_end_date_idx")
+  @@index([planId], map: "billing_subscriptions_plan_id_idx")
   @@map("billing_subscriptions")
 }
 
 model AdminAuditLog {
-  id          String    @id @default(uuid()) @db.Uuid
-  adminId     String?   @map("admin_id") @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
+  adminId     String?  @map("admin_id") @db.Uuid
   action      String
-  entityType  String    @map("entity_type")
-  entityId    String?   @map("entity_id")
-  detailsJson Json?     @map("details_json")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  admin       Admin?    @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  detailsJson Json?    @map("details_json")
+  createdAt   DateTime @default(now()) @map("created_at")
+  admin       Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
 
   @@index([adminId])
   @@index([entityType, entityId])

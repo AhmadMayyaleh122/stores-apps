@@ -13,11 +13,16 @@ import {
 import { AdminJwtAuthGuard } from '../admin-auth/guards/admin-jwt-auth.guard';
 import {
   AdminStoreResponse,
+  AdminStoreSubscriptionResponse,
+  AdminStoreSubscriptionsListResponse,
   AdminStoresListResponse,
   AdminStoresService,
 } from './admin-stores.service';
+import { CreateAdminStoreSubscriptionDto } from './dto/create-admin-store-subscription.dto';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
+import { ListAdminStoreSubscriptionsQueryDto } from './dto/list-admin-store-subscriptions-query.dto';
 import { ListAdminStoresQueryDto } from './dto/list-admin-stores-query.dto';
+import { StartAdminStoreTrialDto } from './dto/start-admin-store-trial.dto';
 import { UpdateAdminStoreDto } from './dto/update-admin-store.dto';
 import { UpdateAdminStoreStatusDto } from './dto/update-admin-store-status.dto';
 
@@ -64,5 +69,39 @@ export class AdminStoresController {
       id,
       updateStoreStatusDto,
     );
+  }
+
+  @Get(':storeId/subscription')
+  async getCurrentStoreSubscription(
+    @Param('storeId', new ParseUUIDPipe({ version: '4' })) storeId: string,
+  ): Promise<AdminStoreSubscriptionResponse> {
+    return this.adminStoresService.getCurrentStoreSubscription(storeId);
+  }
+
+  @Get(':storeId/subscriptions')
+  async listStoreSubscriptions(
+    @Param('storeId', new ParseUUIDPipe({ version: '4' })) storeId: string,
+    @Query() query: ListAdminStoreSubscriptionsQueryDto,
+  ): Promise<AdminStoreSubscriptionsListResponse> {
+    return this.adminStoresService.listStoreSubscriptions(storeId, query);
+  }
+
+  @Post(':storeId/subscriptions')
+  async createStoreSubscription(
+    @Param('storeId', new ParseUUIDPipe({ version: '4' })) storeId: string,
+    @Body() createSubscriptionDto: CreateAdminStoreSubscriptionDto,
+  ): Promise<AdminStoreSubscriptionResponse> {
+    return this.adminStoresService.createStoreSubscription(
+      storeId,
+      createSubscriptionDto,
+    );
+  }
+
+  @Post(':storeId/subscriptions/trial')
+  async startStoreTrial(
+    @Param('storeId', new ParseUUIDPipe({ version: '4' })) storeId: string,
+    @Body() startTrialDto: StartAdminStoreTrialDto,
+  ): Promise<AdminStoreSubscriptionResponse> {
+    return this.adminStoresService.startStoreTrial(storeId, startTrialDto);
   }
 }

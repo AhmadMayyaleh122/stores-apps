@@ -4,7 +4,6 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  IsUUID,
   Matches,
   MaxLength,
   MinLength,
@@ -59,10 +58,6 @@ export class CreateAdminStoreDto {
   @IsOptional()
   @IsEnum(StoreStatus)
   status?: StoreStatus;
-
-  @IsOptional()
-  @IsUUID()
-  subscriptionPlanId?: string;
 
   @IsOptional()
   @IsString()

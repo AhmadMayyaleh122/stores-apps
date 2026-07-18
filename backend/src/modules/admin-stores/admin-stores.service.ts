@@ -5,10 +5,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { Prisma, StoreStatus } from '../../../generated/prisma/client';
+import {
+  BillingInterval,
+  BillingType,
+  Prisma,
+  StoreStatus,
+  SubscriptionStatus,
+} from '../../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { CreateAdminStoreSubscriptionDto } from './dto/create-admin-store-subscription.dto';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
+import { ListAdminStoreSubscriptionsQueryDto } from './dto/list-admin-store-subscriptions-query.dto';
 import { ListAdminStoresQueryDto } from './dto/list-admin-stores-query.dto';
+import { StartAdminStoreTrialDto } from './dto/start-admin-store-trial.dto';
 import { UpdateAdminStoreDto } from './dto/update-admin-store.dto';
 import { UpdateAdminStoreStatusDto } from './dto/update-admin-store-status.dto';
 
@@ -29,8 +38,55 @@ const adminStoreSelect = {
   updatedAt: true,
 } satisfies Prisma.StoreSelect;
 
+const currentOperationalSubscriptionStatuses = [
+  SubscriptionStatus.TRIALING,
+  SubscriptionStatus.ACTIVE,
+  SubscriptionStatus.PAST_DUE,
+  SubscriptionStatus.LIFETIME,
+] satisfies SubscriptionStatus[];
+
+const adminStoreSubscriptionSelect = {
+  id: true,
+  storeId: true,
+  planId: true,
+  startDate: true,
+  endDate: true,
+  status: true,
+  isTrial: true,
+  amount: true,
+  createdAt: true,
+  updatedAt: true,
+  plan: {
+    select: {
+      id: true,
+      name: true,
+      billingType: true,
+      billingInterval: true,
+      intervalCount: true,
+      trialDays: true,
+    },
+  },
+} satisfies Prisma.BillingSubscriptionSelect;
+
+const subscriptionPlanSelect = {
+  id: true,
+  price: true,
+  billingType: true,
+  billingInterval: true,
+  intervalCount: true,
+  trialDays: true,
+} satisfies Prisma.SubscriptionPlanSelect;
+
 type AdminStore = Prisma.StoreGetPayload<{
   select: typeof adminStoreSelect;
+}>;
+
+type AdminStoreSubscription = Prisma.BillingSubscriptionGetPayload<{
+  select: typeof adminStoreSubscriptionSelect;
+}>;
+
+type SubscriptionPlanForAssignment = Prisma.SubscriptionPlanGetPayload<{
+  select: typeof subscriptionPlanSelect;
 }>;
 
 export interface AdminStoreResponse {
@@ -46,6 +102,22 @@ export interface AdminStoresListResponse {
   message: string;
   data: {
     stores: AdminStore[];
+  };
+}
+
+export interface AdminStoreSubscriptionResponse {
+  success: true;
+  message: string;
+  data: {
+    subscription: AdminStoreSubscription;
+  };
+}
+
+export interface AdminStoreSubscriptionsListResponse {
+  success: true;
+  message: string;
+  data: {
+    subscriptions: AdminStoreSubscription[];
   };
 }
 
@@ -114,7 +186,6 @@ export class AdminStoresService {
           ownerEmail: createStoreDto.ownerEmail,
           ownerPhone: createStoreDto.ownerPhone,
           status: createStoreDto.status ?? StoreStatus.TRIAL,
-          subscriptionPlanId: createStoreDto.subscriptionPlanId,
           databaseName: createStoreDto.databaseName,
           logoUrl: createStoreDto.logoUrl,
           primaryColor: createStoreDto.primaryColor,
@@ -219,6 +290,459 @@ export class AdminStoresService {
         store,
       },
     };
+  }
+
+  async getCurrentStoreSubscription(
+    storeId: string,
+  ): Promise<AdminStoreSubscriptionResponse> {
+    await this.assertStoreExists(storeId);
+
+    const subscription =
+      await this.prismaService.billingSubscription.findFirst({
+        where: {
+          storeId,
+          status: {
+            in: currentOperationalSubscriptionStatuses,
+          },
+        },
+        select: adminStoreSubscriptionSelect,
+      });
+
+    if (!subscription) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Current store subscription not found',
+      });
+    }
+
+    return {
+      success: true,
+      message: 'Current store subscription retrieved successfully',
+      data: {
+        subscription,
+      },
+    };
+  }
+
+  async listStoreSubscriptions(
+    storeId: string,
+    query: ListAdminStoreSubscriptionsQueryDto,
+  ): Promise<AdminStoreSubscriptionsListResponse> {
+    await this.assertStoreExists(storeId);
+
+    const subscriptions =
+      await this.prismaService.billingSubscription.findMany({
+        where: {
+          storeId,
+          ...(query.status ? { status: query.status } : {}),
+        },
+        orderBy: [{ startDate: 'desc' }, { createdAt: 'desc' }],
+        select: adminStoreSubscriptionSelect,
+      });
+
+    return {
+      success: true,
+      message: 'Store subscription history retrieved successfully',
+      data: {
+        subscriptions,
+      },
+    };
+  }
+
+  async createStoreSubscription(
+    storeId: string,
+    dto: CreateAdminStoreSubscriptionDto,
+  ): Promise<AdminStoreSubscriptionResponse> {
+    await this.assertStoreExists(storeId);
+    const plan = await this.findSubscriptionPlanOrThrow(dto.planId);
+
+    if (plan.billingType === BillingType.TRIAL) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Trial plans must use the trial subscription endpoint',
+      });
+    }
+
+    const startDate = this.parseSubscriptionDate(dto.startDate, 'startDate');
+    const requestedEndDate = dto.endDate
+      ? this.parseSubscriptionDate(dto.endDate, 'endDate')
+      : null;
+    const { endDate, status } = this.resolveNormalSubscriptionPeriod(
+      plan,
+      startDate,
+      requestedEndDate,
+    );
+
+    await this.assertNoCurrentSubscription(storeId);
+
+    const subscription = await this.createSubscriptionTransaction(
+      {
+        storeId,
+        planId: plan.id,
+        startDate,
+        endDate,
+        status,
+        isTrial: false,
+        amount: plan.price,
+      },
+      StoreStatus.ACTIVE,
+    );
+
+    return {
+      success: true,
+      message: 'Store subscription created successfully',
+      data: {
+        subscription,
+      },
+    };
+  }
+
+  async startStoreTrial(
+    storeId: string,
+    dto: StartAdminStoreTrialDto,
+  ): Promise<AdminStoreSubscriptionResponse> {
+    await this.assertStoreExists(storeId);
+    const plan = await this.findSubscriptionPlanOrThrow(dto.planId);
+
+    if (
+      plan.billingType !== BillingType.TRIAL &&
+      !(plan.trialDays && plan.trialDays > 0)
+    ) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Subscription plan is not eligible for a trial',
+      });
+    }
+
+    if (dto.endDate !== undefined && dto.trialDays !== undefined) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Provide either endDate or trialDays, not both',
+      });
+    }
+
+    const startDate = this.parseSubscriptionDate(dto.startDate, 'startDate');
+    const endDate = this.resolveTrialEndDate(dto, plan, startDate);
+
+    await this.assertTrialNotPreviouslyUsed(storeId);
+    await this.assertNoCurrentSubscription(storeId);
+
+    const subscription = await this.createSubscriptionTransaction(
+      {
+        storeId,
+        planId: plan.id,
+        startDate,
+        endDate,
+        status: SubscriptionStatus.TRIALING,
+        isTrial: true,
+        amount: new Prisma.Decimal(0),
+      },
+      StoreStatus.TRIAL,
+    );
+
+    return {
+      success: true,
+      message: 'Store trial started successfully',
+      data: {
+        subscription,
+      },
+    };
+  }
+
+  private async assertStoreExists(storeId: string): Promise<void> {
+    const store = await this.prismaService.store.findUnique({
+      where: { id: storeId },
+      select: { id: true },
+    });
+
+    if (!store) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Store not found',
+      });
+    }
+  }
+
+  private async findSubscriptionPlanOrThrow(
+    planId: string,
+  ): Promise<SubscriptionPlanForAssignment> {
+    const plan = await this.prismaService.subscriptionPlan.findUnique({
+      where: { id: planId },
+      select: subscriptionPlanSelect,
+    });
+
+    if (!plan) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Subscription plan not found',
+      });
+    }
+
+    return plan;
+  }
+
+  private async assertNoCurrentSubscription(storeId: string): Promise<void> {
+    const currentSubscription =
+      await this.prismaService.billingSubscription.findFirst({
+        where: {
+          storeId,
+          status: {
+            in: currentOperationalSubscriptionStatuses,
+          },
+        },
+        select: { id: true },
+      });
+
+    if (currentSubscription) {
+      throw new ConflictException({
+        success: false,
+        message: 'Store already has a current operational subscription',
+      });
+    }
+  }
+
+  private async assertTrialNotPreviouslyUsed(storeId: string): Promise<void> {
+    const previousTrial =
+      await this.prismaService.billingSubscription.findFirst({
+        where: {
+          storeId,
+          isTrial: true,
+        },
+        select: { id: true },
+      });
+
+    if (previousTrial) {
+      throw new ConflictException({
+        success: false,
+        message: 'Store has already used a trial subscription',
+      });
+    }
+  }
+
+  private parseSubscriptionDate(value: string | undefined, field: string): Date {
+    if (value === undefined) {
+      return new Date();
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException({
+        success: false,
+        message: `${field} must be a valid ISO-8601 date`,
+      });
+    }
+
+    return date;
+  }
+
+  private resolveNormalSubscriptionPeriod(
+    plan: SubscriptionPlanForAssignment,
+    startDate: Date,
+    requestedEndDate: Date | null,
+  ): { endDate: Date | null; status: SubscriptionStatus } {
+    if (requestedEndDate && requestedEndDate <= startDate) {
+      throw new BadRequestException({
+        success: false,
+        message: 'endDate must be strictly later than startDate',
+      });
+    }
+
+    if (
+      plan.billingType === BillingType.RECURRING &&
+      plan.billingInterval === BillingInterval.NONE
+    ) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Recurring plans must define a billing interval',
+      });
+    }
+
+    if (
+      plan.billingInterval === BillingInterval.CUSTOM &&
+      requestedEndDate === null
+    ) {
+      throw new BadRequestException({
+        success: false,
+        message: 'endDate is required for custom billing intervals',
+      });
+    }
+
+    if (
+      plan.billingType === BillingType.ONE_TIME &&
+      plan.billingInterval === BillingInterval.NONE &&
+      requestedEndDate === null
+    ) {
+      return {
+        endDate: null,
+        status: SubscriptionStatus.LIFETIME,
+      };
+    }
+
+    let endDate = requestedEndDate;
+
+    if (
+      endDate === null &&
+      (plan.billingInterval === BillingInterval.MONTHLY ||
+        plan.billingInterval === BillingInterval.YEARLY)
+    ) {
+      if (plan.intervalCount < 1) {
+        throw new BadRequestException({
+          success: false,
+          message: 'Subscription plan intervalCount must be positive',
+        });
+      }
+
+      endDate =
+        plan.billingInterval === BillingInterval.MONTHLY
+          ? this.addUtcCalendarMonths(startDate, plan.intervalCount)
+          : this.addUtcCalendarYears(startDate, plan.intervalCount);
+    }
+
+    return {
+      endDate,
+      status: SubscriptionStatus.ACTIVE,
+    };
+  }
+
+  private resolveTrialEndDate(
+    dto: StartAdminStoreTrialDto,
+    plan: SubscriptionPlanForAssignment,
+    startDate: Date,
+  ): Date {
+    let endDate: Date;
+
+    if (dto.endDate !== undefined) {
+      endDate = this.parseSubscriptionDate(dto.endDate, 'endDate');
+    } else {
+      const trialDays = dto.trialDays ?? plan.trialDays;
+
+      if (!trialDays || trialDays < 1) {
+        throw new BadRequestException({
+          success: false,
+          message: 'A positive trial duration is required',
+        });
+      }
+
+      endDate = new Date(startDate);
+      endDate.setUTCDate(endDate.getUTCDate() + trialDays);
+    }
+
+    if (endDate <= startDate) {
+      throw new BadRequestException({
+        success: false,
+        message: 'endDate must be strictly later than startDate',
+      });
+    }
+
+    return endDate;
+  }
+
+  private addUtcCalendarMonths(date: Date, months: number): Date {
+    const result = new Date(date);
+    const requestedDay = result.getUTCDate();
+    result.setUTCDate(1);
+    result.setUTCMonth(result.getUTCMonth() + months);
+    const lastDayOfTargetMonth = new Date(
+      Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0),
+    ).getUTCDate();
+    result.setUTCDate(Math.min(requestedDay, lastDayOfTargetMonth));
+
+    return result;
+  }
+
+  private addUtcCalendarYears(date: Date, years: number): Date {
+    const result = new Date(date);
+    const requestedMonth = result.getUTCMonth();
+    const requestedDay = result.getUTCDate();
+    result.setUTCDate(1);
+    result.setUTCFullYear(result.getUTCFullYear() + years);
+    result.setUTCMonth(requestedMonth);
+    const lastDayOfTargetMonth = new Date(
+      Date.UTC(result.getUTCFullYear(), requestedMonth + 1, 0),
+    ).getUTCDate();
+    result.setUTCDate(Math.min(requestedDay, lastDayOfTargetMonth));
+
+    return result;
+  }
+
+  private async createSubscriptionTransaction(
+    data: Prisma.BillingSubscriptionUncheckedCreateInput,
+    storeStatus: StoreStatus,
+  ): Promise<AdminStoreSubscription> {
+    try {
+      return await this.prismaService.$transaction(async (tx) => {
+        const subscription = await tx.billingSubscription.create({
+          data,
+          select: adminStoreSubscriptionSelect,
+        });
+
+        await tx.store.update({
+          where: { id: data.storeId },
+          data: {
+            subscriptionPlanId: data.planId,
+            status: storeStatus,
+          },
+          select: { id: true },
+        });
+
+        return subscription;
+      });
+    } catch (error) {
+      this.handleSubscriptionMutationError(error);
+    }
+  }
+
+  private handleSubscriptionMutationError(error: unknown): never {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === 'P2002') {
+        if (!this.isCurrentSubscriptionUniqueConflict(error)) {
+          throw new ConflictException({
+            success: false,
+            message: 'Subscription already exists',
+          });
+        }
+
+        throw new ConflictException({
+          success: false,
+          message: 'Store already has a current operational subscription',
+        });
+      }
+
+      if (error.code === 'P2003') {
+        throw new BadRequestException({
+          success: false,
+          message: 'Invalid store or subscription plan relation',
+        });
+      }
+
+      if (error.code === 'P2025') {
+        throw new NotFoundException({
+          success: false,
+          message: 'Store or subscription plan not found',
+        });
+      }
+    }
+
+    throw error;
+  }
+
+  private isCurrentSubscriptionUniqueConflict(
+    error: Prisma.PrismaClientKnownRequestError,
+  ): boolean {
+    const target = error.meta?.target;
+    const constraint = error.meta?.constraint;
+    const identifiers = [
+      ...(Array.isArray(target) ? target : [target]),
+      ...(Array.isArray(constraint) ? constraint : [constraint]),
+    ];
+
+    return identifiers.some(
+      (identifier) =>
+        identifier === 'storeId' ||
+        identifier === 'store_id' ||
+        identifier === 'billing_subscriptions_one_current_per_store_uidx',
+    );
   }
 
   private buildListWhere(
@@ -368,10 +892,6 @@ export class AdminStoresService {
       data.ownerPhone = dto.ownerPhone;
     }
 
-    if (dto.subscriptionPlanId !== undefined) {
-      data.subscriptionPlanId = dto.subscriptionPlanId;
-    }
-
     if (dto.databaseName !== undefined) {
       data.databaseName = dto.databaseName;
     }
@@ -401,13 +921,6 @@ export class AdminStoresService {
         throw new ConflictException({
           success: false,
           message: this.getUniqueConflictMessage(error),
-        });
-      }
-
-      if (error.code === 'P2003') {
-        throw new BadRequestException({
-          success: false,
-          message: 'Invalid subscription plan id',
         });
       }
 
