@@ -132,7 +132,7 @@ export class AdminAuthService {
       },
     });
 
-    if (!admin || admin.status !== AdminStatus.ACTIVE) {
+    if (admin?.status !== AdminStatus.ACTIVE) {
       throw new UnauthorizedException({
         success: false,
         message: 'Invalid or expired admin token',
