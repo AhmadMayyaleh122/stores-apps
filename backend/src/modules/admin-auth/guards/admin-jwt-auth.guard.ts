@@ -8,12 +8,18 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
 import { AdminJwtPayload } from '../admin-auth.service';
+import { isCanonicalUuidV4 } from '../utils/admin-uuid.util';
+
+interface RequestPrincipal {
+  sub?: unknown;
+}
 
 interface RequestWithAdmin {
   headers: {
     authorization?: string | string[];
   };
   admin?: AdminJwtPayload;
+  user?: RequestPrincipal;
 }
 
 @Injectable()
@@ -40,7 +46,12 @@ export class AdminJwtAuthGuard implements CanActivate {
         throw this.createUnauthorizedException();
       }
 
+      if (request.user && request.user.sub !== payload.sub) {
+        throw this.createUnauthorizedException();
+      }
+
       request.admin = payload;
+      request.user ??= payload;
 
       return true;
     } catch {
@@ -76,7 +87,7 @@ export class AdminJwtAuthGuard implements CanActivate {
 
   private isAdminJwtPayload(payload: AdminJwtPayload): payload is AdminJwtPayload {
     return (
-      typeof payload.sub === 'string' &&
+      isCanonicalUuidV4(payload.sub) &&
       typeof payload.email === 'string' &&
       typeof payload.role === 'string'
     );
