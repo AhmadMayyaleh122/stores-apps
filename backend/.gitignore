@@ -10,3 +10,4 @@ yarn-error.log*
 pnpm-debug.log*
 
 /generated/prisma
+/generated/tenant-prisma

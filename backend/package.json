@@ -10,7 +10,16 @@
     "build": "nest build",
     "lint": "tsc --noEmit",
     "test": "jest",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "prisma:master:validate": "prisma validate --config=prisma.config.ts",
+    "prisma:master:generate": "prisma generate --config=prisma.config.ts",
+    "prisma:master:migrate:status": "prisma migrate status --config=prisma.config.ts",
+    "prisma:master:migrate:deploy": "prisma migrate deploy --config=prisma.config.ts",
+    "prisma:tenant:validate": "prisma validate --config=prisma.tenant.config.ts",
+    "prisma:tenant:generate": "prisma generate --config=prisma.tenant.config.ts",
+    "prisma:tenant:migrate:status": "prisma migrate status --config=prisma.tenant.config.ts",
+    "prisma:tenant:migrate:deploy": "prisma migrate deploy --config=prisma.tenant.config.ts",
+    "prisma:tenant:migrate:dev": "prisma migrate dev --config=prisma.tenant.config.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",
