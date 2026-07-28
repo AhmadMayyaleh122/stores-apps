@@ -1,7 +1,9 @@
-import "dotenv/config";
 import { URL } from "node:url";
 
 import { defineConfig } from "prisma/config";
+
+// Callers must supply tenant migration environment explicitly. Automatic .env
+// loading is intentionally disabled so isolated migration processes stay isolated.
 
 interface DatabaseTarget {
   hostname: string;
