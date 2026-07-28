@@ -6,6 +6,7 @@ import {
 } from 'node:crypto';
 
 import {
+  createTenantProvisioningError,
   TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
@@ -190,9 +191,8 @@ function copyAndValidateEncryptionKey(encryptionKey: Buffer): Buffer {
     !Buffer.isBuffer(encryptionKey) ||
     encryptionKey.length !== ENCRYPTION_KEY_BYTES
   ) {
-    throw new TenantProvisioningError(
+    throw createTenantProvisioningError(
       TenantProvisioningErrorCode.ENCRYPTION_KEY_INVALID,
-      'Tenant credential encryption key is invalid.',
     );
   }
 
@@ -259,15 +259,13 @@ function decodeStrictBase64Url(value: string): Buffer {
 }
 
 function createEncryptionFailure(): TenantProvisioningError {
-  return new TenantProvisioningError(
+  return createTenantProvisioningError(
     TenantProvisioningErrorCode.CREDENTIAL_ENCRYPTION_FAILED,
-    'Tenant credential could not be encrypted.',
   );
 }
 
 function createDecryptionFailure(): TenantProvisioningError {
-  return new TenantProvisioningError(
+  return createTenantProvisioningError(
     TenantProvisioningErrorCode.CREDENTIAL_DECRYPTION_FAILED,
-    'Tenant credential could not be decrypted.',
   );
 }

@@ -3,6 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PrismaClient as TenantPrismaClient } from '../../../../generated/tenant-prisma/client';
 import {
+  createTenantProvisioningError,
   TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
@@ -213,16 +214,5 @@ function createIdentityError(
     | TenantProvisioningErrorCode.VERIFICATION_FAILED
     | TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED,
 ): TenantProvisioningError {
-  const messages = {
-    [TenantProvisioningErrorCode.IDENTITY_MISMATCH]:
-      'Tenant database identity does not match the requested store.',
-    [TenantProvisioningErrorCode.IDENTITY_INITIALIZATION_FAILED]:
-      'Tenant database identity could not be initialized.',
-    [TenantProvisioningErrorCode.VERIFICATION_FAILED]:
-      'Tenant database identity could not be verified.',
-    [TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED]:
-      'Tenant database identity connection could not be closed.',
-  } as const;
-
-  return new TenantProvisioningError(code, messages[code]);
+  return createTenantProvisioningError(code);
 }

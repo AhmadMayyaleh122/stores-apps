@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import {
+  createTenantProvisioningError,
   TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
@@ -343,8 +344,7 @@ function decodeEncryptionKey(value: string): Buffer {
 }
 
 function throwInvalidConfiguration(): never {
-  throw new TenantProvisioningError(
+  throw createTenantProvisioningError(
     TenantProvisioningErrorCode.CONFIGURATION_INVALID,
-    'Tenant provisioning configuration is invalid.',
   );
 }

@@ -1,5 +1,5 @@
 import {
-  TenantProvisioningError,
+  createTenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
 import { validatePostgresIdentifier } from './tenant-database-identifier.util';
@@ -58,9 +58,8 @@ export function buildTenantDatabaseUrl(
 
     return url.toString();
   } catch {
-    throw new TenantProvisioningError(
+    throw createTenantProvisioningError(
       TenantProvisioningErrorCode.DATABASE_URL_INVALID,
-      'Tenant database URL configuration is invalid.',
     );
   }
 }

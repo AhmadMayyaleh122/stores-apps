@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import {
+  createTenantProvisioningError,
   TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
@@ -180,9 +181,8 @@ function executePrismaCli(
 }
 
 function createMigrationError(): TenantProvisioningError {
-  return new TenantProvisioningError(
+  return createTenantProvisioningError(
     TenantProvisioningErrorCode.MIGRATION_FAILED,
-    'Tenant database migration failed.',
   );
 }
 

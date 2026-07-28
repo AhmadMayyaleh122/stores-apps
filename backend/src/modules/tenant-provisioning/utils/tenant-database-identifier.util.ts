@@ -1,5 +1,5 @@
 import {
-  TenantProvisioningError,
+  createTenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
 
@@ -58,8 +58,7 @@ export function quotePostgresIdentifier(identifier: string): string {
 }
 
 function throwInvalidIdentifier(): never {
-  throw new TenantProvisioningError(
+  throw createTenantProvisioningError(
     TenantProvisioningErrorCode.IDENTIFIER_INVALID,
-    'Tenant database identifier is invalid.',
   );
 }

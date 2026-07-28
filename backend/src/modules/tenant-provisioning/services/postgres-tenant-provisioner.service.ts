@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Client, QueryResult } from 'pg';
 
 import {
+  createTenantProvisioningError,
   TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
@@ -358,40 +359,5 @@ function preserveSafeError(
 function createSafeError(
   code: TenantProvisioningErrorCode,
 ): TenantProvisioningError {
-  const messages: Record<TenantProvisioningErrorCode, string> = {
-    [TenantProvisioningErrorCode.IDENTIFIER_INVALID]:
-      'Tenant database identifier is invalid.',
-    [TenantProvisioningErrorCode.DATABASE_URL_INVALID]:
-      'Tenant database URL is invalid.',
-    [TenantProvisioningErrorCode.CONFIGURATION_INVALID]:
-      'Tenant provisioning configuration is invalid.',
-    [TenantProvisioningErrorCode.ENCRYPTION_KEY_INVALID]:
-      'Tenant credential encryption key is invalid.',
-    [TenantProvisioningErrorCode.CREDENTIAL_ENCRYPTION_FAILED]:
-      'Tenant credential could not be encrypted.',
-    [TenantProvisioningErrorCode.CREDENTIAL_DECRYPTION_FAILED]:
-      'Tenant credential could not be decrypted.',
-    [TenantProvisioningErrorCode.POSTGRES_ADMIN_UNAVAILABLE]:
-      'PostgreSQL administration is unavailable.',
-    [TenantProvisioningErrorCode.ROLE_CONFLICT]:
-      'Tenant PostgreSQL role conflicts with expected ownership.',
-    [TenantProvisioningErrorCode.ROLE_PROVISIONING_FAILED]:
-      'Tenant PostgreSQL role could not be provisioned.',
-    [TenantProvisioningErrorCode.DATABASE_OWNER_CONFLICT]:
-      'Tenant database conflicts with expected ownership.',
-    [TenantProvisioningErrorCode.DATABASE_PROVISIONING_FAILED]:
-      'Tenant database could not be provisioned.',
-    [TenantProvisioningErrorCode.MIGRATION_FAILED]:
-      'Tenant database migration failed.',
-    [TenantProvisioningErrorCode.IDENTITY_MISMATCH]:
-      'Tenant database identity does not match the requested store.',
-    [TenantProvisioningErrorCode.IDENTITY_INITIALIZATION_FAILED]:
-      'Tenant database identity could not be initialized.',
-    [TenantProvisioningErrorCode.VERIFICATION_FAILED]:
-      'Tenant database identity could not be verified.',
-    [TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED]:
-      'Tenant database identity connection could not be closed.',
-  };
-
-  return new TenantProvisioningError(code, messages[code]);
+  return createTenantProvisioningError(code);
 }
