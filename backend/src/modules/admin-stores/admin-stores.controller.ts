@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -13,6 +15,8 @@ import {
 import { AdminJwtAuthGuard } from '../admin-auth/guards/admin-jwt-auth.guard';
 import {
   AdminStoreResponse,
+  AdminStoreProvisioningResponse,
+  AdminStoreProvisioningRetryResponse,
   AdminStoreSubscriptionResponse,
   AdminStoreSubscriptionsListResponse,
   AdminStoresListResponse,
@@ -69,6 +73,21 @@ export class AdminStoresController {
       id,
       updateStoreStatusDto,
     );
+  }
+
+  @Get(':storeId/provisioning')
+  async getStoreProvisioning(
+    @Param('storeId', new ParseUUIDPipe({ version: '4' })) storeId: string,
+  ): Promise<AdminStoreProvisioningResponse> {
+    return this.adminStoresService.getStoreProvisioning(storeId);
+  }
+
+  @Post(':storeId/provisioning/retry')
+  @HttpCode(HttpStatus.OK)
+  async retryStoreProvisioning(
+    @Param('storeId', new ParseUUIDPipe({ version: '4' })) storeId: string,
+  ): Promise<AdminStoreProvisioningRetryResponse> {
+    return this.adminStoresService.retryStoreProvisioning(storeId);
   }
 
   @Get(':storeId/subscription')

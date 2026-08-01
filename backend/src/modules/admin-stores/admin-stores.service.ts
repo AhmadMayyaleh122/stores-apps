@@ -1,8 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 
 import {
@@ -11,8 +14,19 @@ import {
   Prisma,
   StoreStatus,
   SubscriptionStatus,
+  TenantProvisioningStatus,
 } from '../../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import {
+  TenantProvisioningError,
+  TenantProvisioningErrorCode,
+  getTenantProvisioningSafeMessage,
+} from '../tenant-provisioning/tenant-provisioning.errors';
+import {
+  TenantProvisioningResult,
+  TenantProvisioningService,
+} from '../tenant-provisioning/tenant-provisioning.service';
+import { TenantProvisioningPublicRecord } from '../tenant-provisioning/tenant-provisioning.select';
 import { CreateAdminStoreSubscriptionDto } from './dto/create-admin-store-subscription.dto';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
 import { ListAdminStoreSubscriptionsQueryDto } from './dto/list-admin-store-subscriptions-query.dto';
@@ -121,9 +135,28 @@ export interface AdminStoreSubscriptionsListResponse {
   };
 }
 
+export interface AdminStoreProvisioningResponse {
+  success: true;
+  message: string;
+  data: {
+    provisioning: TenantProvisioningPublicRecord;
+  };
+}
+
+export interface AdminStoreProvisioningRetryResponse
+  extends AdminStoreProvisioningResponse {
+  data: {
+    provisioning: TenantProvisioningPublicRecord;
+    alreadyReady: boolean;
+  };
+}
+
 @Injectable()
 export class AdminStoresService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly tenantProvisioningService: TenantProvisioningService,
+  ) {}
 
   async createStore(
     createStoreDto: CreateAdminStoreDto,
@@ -163,6 +196,7 @@ export class AdminStoresService {
     }
 
     const store = await this.createStoreRecord(createStoreDto, storeSlug);
+    await this.provisionTenantStore(store.id);
 
     return {
       success: true,
@@ -171,6 +205,119 @@ export class AdminStoresService {
         store,
       },
     };
+  }
+
+  async getStoreProvisioning(
+    storeId: string,
+  ): Promise<AdminStoreProvisioningResponse> {
+    try {
+      const provisioning =
+        await this.tenantProvisioningService.getProvisioningStatus(storeId);
+
+      return {
+        success: true,
+        message: 'Store provisioning status retrieved successfully',
+        data: { provisioning },
+      };
+    } catch (error) {
+      this.handleTenantProvisioningError(error);
+    }
+  }
+
+  async retryStoreProvisioning(
+    storeId: string,
+  ): Promise<AdminStoreProvisioningRetryResponse> {
+    try {
+      const result =
+        await this.tenantProvisioningService.provisionStore(storeId);
+      this.assertProvisioningReady(result);
+
+      return {
+        success: true,
+        message: result.alreadyReady
+          ? 'Store provisioning is already complete'
+          : 'Store provisioning completed successfully',
+        data: result,
+      };
+    } catch (error) {
+      this.handleTenantProvisioningError(error);
+    }
+  }
+
+  private async provisionTenantStore(storeId: string): Promise<void> {
+    try {
+      const result =
+        await this.tenantProvisioningService.provisionStore(storeId);
+      this.assertProvisioningReady(result);
+    } catch (error) {
+      this.handleTenantProvisioningError(error);
+    }
+  }
+
+  private assertProvisioningReady(result: TenantProvisioningResult): void {
+    if (result.provisioning.status !== TenantProvisioningStatus.READY) {
+      throw new ConflictException({
+        success: false,
+        message: getTenantProvisioningSafeMessage(
+          TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
+        ),
+        code: TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
+      });
+    }
+  }
+
+  private handleTenantProvisioningError(error: unknown): never {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+
+    if (!(error instanceof TenantProvisioningError)) {
+      throw new InternalServerErrorException({
+        success: false,
+        message: getTenantProvisioningSafeMessage(
+          TenantProvisioningErrorCode.PROVISIONING_FAILED,
+        ),
+        code: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+      });
+    }
+
+    const response = {
+      success: false,
+      message: getTenantProvisioningSafeMessage(error.code),
+      code: error.code,
+    };
+
+    switch (error.code) {
+      case TenantProvisioningErrorCode.STORE_NOT_FOUND:
+      case TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND:
+        throw new NotFoundException(response);
+      case TenantProvisioningErrorCode.IDENTIFIER_INVALID:
+        throw new BadRequestException(response);
+      case TenantProvisioningErrorCode.ROLE_CONFLICT:
+      case TenantProvisioningErrorCode.DATABASE_OWNER_CONFLICT:
+      case TenantProvisioningErrorCode.IDENTITY_MISMATCH:
+      case TenantProvisioningErrorCode.IDENTIFIER_CONFLICT:
+      case TenantProvisioningErrorCode.RECORD_INTEGRITY_FAILED:
+      case TenantProvisioningErrorCode.CONFIGURATION_DRIFT:
+      case TenantProvisioningErrorCode.PROVISIONING_IN_PROGRESS:
+      case TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT:
+        throw new ConflictException(response);
+      case TenantProvisioningErrorCode.CONFIGURATION_INVALID:
+      case TenantProvisioningErrorCode.ENCRYPTION_KEY_INVALID:
+      case TenantProvisioningErrorCode.DATABASE_URL_INVALID:
+      case TenantProvisioningErrorCode.POSTGRES_ADMIN_UNAVAILABLE:
+      case TenantProvisioningErrorCode.ROLE_PROVISIONING_FAILED:
+      case TenantProvisioningErrorCode.DATABASE_PROVISIONING_FAILED:
+      case TenantProvisioningErrorCode.MIGRATION_FAILED:
+      case TenantProvisioningErrorCode.IDENTITY_INITIALIZATION_FAILED:
+      case TenantProvisioningErrorCode.VERIFICATION_FAILED:
+      case TenantProvisioningErrorCode.PROVISIONING_FAILED:
+        throw new ServiceUnavailableException(response);
+      case TenantProvisioningErrorCode.CREDENTIAL_ENCRYPTION_FAILED:
+      case TenantProvisioningErrorCode.CREDENTIAL_DECRYPTION_FAILED:
+      case TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED:
+        throw new InternalServerErrorException(response);
+    }
   }
 
   private async createStoreRecord(

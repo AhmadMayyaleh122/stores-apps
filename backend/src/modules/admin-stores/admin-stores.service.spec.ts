@@ -1,7 +1,10 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 
 import {
@@ -10,8 +13,15 @@ import {
   Prisma,
   StoreStatus,
   SubscriptionStatus,
+  TenantProvisioningStatus,
 } from '../../../generated/prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import {
+  createTenantProvisioningError,
+  getTenantProvisioningSafeMessage,
+  TenantProvisioningErrorCode,
+} from '../tenant-provisioning/tenant-provisioning.errors';
+import { TenantProvisioningService } from '../tenant-provisioning/tenant-provisioning.service';
 import { AdminStoresService } from './admin-stores.service';
 import { CreateAdminStoreDto } from './dto/create-admin-store.dto';
 import { ListAdminStoresQueryDto } from './dto/list-admin-stores-query.dto';
@@ -28,6 +38,10 @@ type MockPrismaStore = {
 describe('AdminStoresService', () => {
   let service: AdminStoresService;
   let store: MockPrismaStore;
+  let tenantProvisioning: {
+    provisionStore: jest.Mock;
+    getProvisioningStatus: jest.Mock;
+  };
 
   const now = new Date('2026-07-06T10:00:00.000Z');
 
@@ -48,6 +62,21 @@ describe('AdminStoresService', () => {
     updatedAt: now,
   };
 
+  const provisioning = {
+    id: '98765432-1234-4234-8123-456789012345',
+    storeId: baseStore.id,
+    status: TenantProvisioningStatus.READY,
+    databaseName: 'tenant_db_4de3dc53bceb44e1b94daab4f9a7b197',
+    attemptCount: 1,
+    provisioningStartedAt: now,
+    provisionedAt: now,
+    failedAt: null,
+    lastFailureCode: null,
+    lastFailureMessage: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
   beforeEach(() => {
     store = {
       findFirst: jest.fn(),
@@ -56,10 +85,18 @@ describe('AdminStoresService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     };
+    tenantProvisioning = {
+      provisionStore: jest.fn().mockResolvedValue({
+        provisioning,
+        alreadyReady: false,
+      }),
+      getProvisioningStatus: jest.fn().mockResolvedValue(provisioning),
+    };
 
-    service = new AdminStoresService({
-      store,
-    } as unknown as PrismaService);
+    service = new AdminStoresService(
+      { store } as unknown as PrismaService,
+      tenantProvisioning as unknown as TenantProvisioningService,
+    );
   });
 
   function createDto(
@@ -108,6 +145,198 @@ describe('AdminStoresService', () => {
         }),
       }),
     );
+    expect(tenantProvisioning.provisionStore).toHaveBeenCalledTimes(1);
+    expect(tenantProvisioning.provisionStore).toHaveBeenCalledWith(
+      baseStore.id,
+    );
+    expect(store.create.mock.invocationCallOrder[0]).toBeLessThan(
+      tenantProvisioning.provisionStore.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('waits for provisioning to reach READY before returning create success', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    let resolveProvisioning!: (value: {
+      provisioning: typeof provisioning;
+      alreadyReady: boolean;
+    }) => void;
+    tenantProvisioning.provisionStore.mockReturnValue(
+      new Promise((resolve) => {
+        resolveProvisioning = resolve;
+      }),
+    );
+    let settled = false;
+
+    const responsePromise = service.createStore(createDto());
+    void responsePromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tenantProvisioning.provisionStore).toHaveBeenCalledWith(
+      baseStore.id,
+    );
+    expect(settled).toBe(false);
+
+    resolveProvisioning({ provisioning, alreadyReady: false });
+
+    await expect(responsePromise).resolves.toMatchObject({
+      success: true,
+      message: 'Store created successfully',
+    });
+  });
+
+  it('treats an already READY provisioning result as successful creation', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    tenantProvisioning.provisionStore.mockResolvedValue({
+      provisioning,
+      alreadyReady: true,
+    });
+
+    await expect(service.createStore(createDto())).resolves.toMatchObject({
+      success: true,
+      data: { store: baseStore },
+    });
+  });
+
+  it.each([false, true])(
+    'rejects a non-READY provisioning result when alreadyReady is %s',
+    async (alreadyReady) => {
+      store.findFirst.mockResolvedValue(null);
+      store.create.mockResolvedValue(baseStore);
+      tenantProvisioning.provisionStore.mockResolvedValue({
+        provisioning: {
+          ...provisioning,
+          status: TenantProvisioningStatus.FAILED,
+        },
+        alreadyReady,
+      });
+
+      await expect(service.createStore(createDto())).rejects.toMatchObject({
+        response: {
+          success: false,
+          message: 'Tenant provisioning state changed concurrently.',
+          code: TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
+        },
+      });
+    },
+  );
+
+  it('maps a malformed provisioning result to a generic internal error', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    tenantProvisioning.provisionStore.mockResolvedValue(undefined);
+
+    let caught: unknown;
+    try {
+      await service.createStore(createDto());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(HttpException);
+    expect((caught as HttpException).getStatus()).toBe(
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
+    expect((caught as HttpException).getResponse()).toEqual({
+      success: false,
+      message: 'Tenant database provisioning failed.',
+      code: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+    });
+    expect(JSON.stringify(caught)).not.toContain('Cannot read');
+  });
+
+  it('maps an unknown provisioning failure without exposing its raw message', async () => {
+    const rawMessage =
+      'raw Prisma detail postgresql://admin:secret@localhost/postgres';
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    tenantProvisioning.provisionStore.mockRejectedValue(new Error(rawMessage));
+
+    let caught: unknown;
+    try {
+      await service.createStore(createDto());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect((caught as HttpException).getStatus()).toBe(
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
+    expect((caught as HttpException).getResponse()).toEqual({
+      success: false,
+      message: 'Tenant database provisioning failed.',
+      code: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+    });
+    expect(JSON.stringify(caught)).not.toContain(rawMessage);
+  });
+
+  it('does not start provisioning when Master Store creation fails', async () => {
+    const masterFailure = new Error('master create failed');
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockRejectedValue(masterFailure);
+
+    await expect(service.createStore(createDto())).rejects.toBe(masterFailure);
+    expect(tenantProvisioning.provisionStore).not.toHaveBeenCalled();
+  });
+
+  it('fails Store creation safely when provisioning fails', async () => {
+    const rawDetails =
+      'postgresql://admin:raw-password@localhost/postgres encrypted-secret';
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    tenantProvisioning.provisionStore.mockRejectedValue(
+      Object.assign(
+        createTenantProvisioningError(
+          TenantProvisioningErrorCode.DATABASE_PROVISIONING_FAILED,
+        ),
+        { rawDetails },
+      ),
+    );
+
+    let caught: unknown;
+    try {
+      await service.createStore(createDto());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ServiceUnavailableException);
+    expect(caught).toMatchObject({
+      response: {
+        success: false,
+        message: 'Tenant database could not be provisioned.',
+        code: TenantProvisioningErrorCode.DATABASE_PROVISIONING_FAILED,
+      },
+    });
+    expect(JSON.stringify(caught)).not.toContain(rawDetails);
+    expect(JSON.stringify(caught)).not.toContain('Store created successfully');
+    expect(store.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not include provisioning secrets in the Store create response', async () => {
+    store.findFirst.mockResolvedValue(null);
+    store.create.mockResolvedValue(baseStore);
+    tenantProvisioning.provisionStore.mockResolvedValue({
+      provisioning: {
+        ...provisioning,
+        databasePasswordEncrypted: 'encrypted-secret',
+        tenantDatabaseUrl:
+          'postgresql://tenant:plaintext-password@tenant.internal/database',
+      },
+      alreadyReady: false,
+    });
+
+    const response = await service.createStore(createDto());
+    const serialized = JSON.stringify(response);
+
+    expect(serialized).not.toContain('encrypted-secret');
+    expect(serialized).not.toContain('plaintext-password');
+    expect(serialized).not.toContain('postgresql://');
   });
 
   it('defaults status to TRIAL when status is not provided', async () => {
@@ -157,6 +386,7 @@ describe('AdminStoresService', () => {
       ConflictException,
     );
     expect(store.create).not.toHaveBeenCalled();
+    expect(tenantProvisioning.provisionStore).not.toHaveBeenCalled();
   });
 
   it('translates Prisma P2002 storeSlug races to ConflictException', async () => {
@@ -170,6 +400,7 @@ describe('AdminStoresService', () => {
     await expect(service.createStore(createDto())).rejects.toBeInstanceOf(
       ConflictException,
     );
+    expect(tenantProvisioning.provisionStore).not.toHaveBeenCalled();
   });
 
   it('translates Prisma P2002 databaseName races to ConflictException', async () => {
@@ -478,6 +709,208 @@ describe('AdminStoresService', () => {
     expect(store.update).not.toHaveBeenCalled();
   });
 
+  describe('tenant provisioning operations', () => {
+    it('returns only the safe provisioning status response', async () => {
+      const response = await service.getStoreProvisioning(baseStore.id);
+
+      expect(tenantProvisioning.getProvisioningStatus).toHaveBeenCalledWith(
+        baseStore.id,
+      );
+      expect(response).toEqual({
+        success: true,
+        message: 'Store provisioning status retrieved successfully',
+        data: { provisioning },
+      });
+      expect(JSON.stringify(response)).not.toMatch(
+        /databasePasswordEncrypted|encryptionKeyVersion|databaseHost|databaseUser|postgresql:\/\//,
+      );
+    });
+
+    it.each([
+      TenantProvisioningErrorCode.STORE_NOT_FOUND,
+      TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND,
+    ])('maps %s status lookup failures to NotFoundException', async (code) => {
+      tenantProvisioning.getProvisioningStatus.mockRejectedValue(
+        createTenantProvisioningError(code),
+      );
+
+      await expect(
+        service.getStoreProvisioning(baseStore.id),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('retries provisioning through the existing state machine', async () => {
+      const response = await service.retryStoreProvisioning(baseStore.id);
+
+      expect(tenantProvisioning.provisionStore).toHaveBeenCalledTimes(1);
+      expect(tenantProvisioning.provisionStore).toHaveBeenCalledWith(
+        baseStore.id,
+      );
+      expect(response).toEqual({
+        success: true,
+        message: 'Store provisioning completed successfully',
+        data: {
+          provisioning,
+          alreadyReady: false,
+        },
+      });
+    });
+
+    it('returns a deterministic idempotent response for READY provisioning', async () => {
+      tenantProvisioning.provisionStore.mockResolvedValue({
+        provisioning,
+        alreadyReady: true,
+      });
+
+      await expect(
+        service.retryStoreProvisioning(baseStore.id),
+      ).resolves.toMatchObject({
+        success: true,
+        message: 'Store provisioning is already complete',
+        data: { alreadyReady: true },
+      });
+    });
+
+    it('maps active provisioning to a stable conflict', async () => {
+      tenantProvisioning.provisionStore.mockRejectedValue(
+        createTenantProvisioningError(
+          TenantProvisioningErrorCode.PROVISIONING_IN_PROGRESS,
+        ),
+      );
+
+      await expect(
+        service.retryStoreProvisioning(baseStore.id),
+      ).rejects.toMatchObject({
+        response: {
+          success: false,
+          message: 'Tenant database provisioning is already in progress.',
+          code: TenantProvisioningErrorCode.PROVISIONING_IN_PROGRESS,
+        },
+      });
+    });
+
+    it('maps invalid server configuration to ServiceUnavailableException', async () => {
+      tenantProvisioning.provisionStore.mockRejectedValue(
+        createTenantProvisioningError(
+          TenantProvisioningErrorCode.CONFIGURATION_INVALID,
+        ),
+      );
+
+      await expect(
+        service.retryStoreProvisioning(baseStore.id),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it.each([
+      [TenantProvisioningErrorCode.IDENTIFIER_INVALID, HttpStatus.BAD_REQUEST],
+      [
+        TenantProvisioningErrorCode.DATABASE_URL_INVALID,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.CONFIGURATION_INVALID,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.ENCRYPTION_KEY_INVALID,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.CREDENTIAL_ENCRYPTION_FAILED,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      ],
+      [
+        TenantProvisioningErrorCode.CREDENTIAL_DECRYPTION_FAILED,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      ],
+      [
+        TenantProvisioningErrorCode.POSTGRES_ADMIN_UNAVAILABLE,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [TenantProvisioningErrorCode.ROLE_CONFLICT, HttpStatus.CONFLICT],
+      [
+        TenantProvisioningErrorCode.ROLE_PROVISIONING_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.DATABASE_OWNER_CONFLICT,
+        HttpStatus.CONFLICT,
+      ],
+      [
+        TenantProvisioningErrorCode.DATABASE_PROVISIONING_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.MIGRATION_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [TenantProvisioningErrorCode.IDENTITY_MISMATCH, HttpStatus.CONFLICT],
+      [
+        TenantProvisioningErrorCode.IDENTITY_INITIALIZATION_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.VERIFICATION_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      ],
+      [TenantProvisioningErrorCode.STORE_NOT_FOUND, HttpStatus.NOT_FOUND],
+      [
+        TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      ],
+      [TenantProvisioningErrorCode.IDENTIFIER_CONFLICT, HttpStatus.CONFLICT],
+      [
+        TenantProvisioningErrorCode.RECORD_INTEGRITY_FAILED,
+        HttpStatus.CONFLICT,
+      ],
+      [TenantProvisioningErrorCode.CONFIGURATION_DRIFT, HttpStatus.CONFLICT],
+      [
+        TenantProvisioningErrorCode.PROVISIONING_IN_PROGRESS,
+        HttpStatus.CONFLICT,
+      ],
+      [
+        TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
+        HttpStatus.CONFLICT,
+      ],
+      [
+        TenantProvisioningErrorCode.PROVISIONING_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+    ])('maps %s to stable HTTP status %s', async (code, status) => {
+      tenantProvisioning.provisionStore.mockRejectedValue(
+        createTenantProvisioningError(code),
+      );
+
+      let caught: unknown;
+      try {
+        await service.retryStoreProvisioning(baseStore.id);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(HttpException);
+      expect((caught as HttpException).getStatus()).toBe(status);
+      expect((caught as HttpException).getResponse()).toMatchObject({
+        success: false,
+        message: getTenantProvisioningSafeMessage(code),
+        code,
+      });
+    });
+
+    it('returns no credentials or connection URL from retry', async () => {
+      const response = await service.retryStoreProvisioning(baseStore.id);
+      const serialized = JSON.stringify(response);
+
+      expect(serialized).not.toMatch(
+        /password|databasePasswordEncrypted|encryptionKeyVersion|databaseHost|databaseUser|postgresql:\/\//i,
+      );
+    });
+  });
+
   describe('subscription management', () => {
     const storeId = '4de3dc53-bceb-44e1-b94d-aab4f9a7b197';
     const planId = 'b538a21d-edca-45ac-8869-8da0f07e6845';
@@ -540,15 +973,18 @@ describe('AdminStoresService', () => {
         }),
       );
 
-      service = new AdminStoresService({
-        store,
-        subscriptionPlan: { findUnique: subscriptionPlanFindUnique },
-        billingSubscription: {
-          findFirst: billingSubscriptionFindFirst,
-          findMany: billingSubscriptionFindMany,
-        },
-        $transaction: transaction,
-      } as unknown as PrismaService);
+      service = new AdminStoresService(
+        {
+          store,
+          subscriptionPlan: { findUnique: subscriptionPlanFindUnique },
+          billingSubscription: {
+            findFirst: billingSubscriptionFindFirst,
+            findMany: billingSubscriptionFindMany,
+          },
+          $transaction: transaction,
+        } as unknown as PrismaService,
+        tenantProvisioning as unknown as TenantProvisioningService,
+      );
     });
 
     it('rejects normal subscription creation when the store is missing', async () => {

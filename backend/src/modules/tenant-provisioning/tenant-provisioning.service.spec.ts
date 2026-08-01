@@ -205,6 +205,53 @@ describe('TenantProvisioningService', () => {
       ).resolves.toBeNull();
       expect(harness.config.getProvisioningConfiguration).not.toHaveBeenCalled();
     });
+
+    it('returns an existing safe provisioning status', async () => {
+      const harness = makeHarness();
+      const safeRecord = makeRecord({ status: TenantProvisioningStatus.FAILED });
+      delete safeRecord.databaseHost;
+      delete safeRecord.databasePort;
+      delete safeRecord.databaseUser;
+      delete safeRecord.databasePasswordEncrypted;
+      delete safeRecord.encryptionKeyVersion;
+      harness.prisma.tenantDatabase.findUnique.mockResolvedValue(safeRecord);
+
+      await expect(
+        harness.service.getProvisioningStatus(storeId),
+      ).resolves.toEqual(safeRecord);
+      expect(harness.prisma.tenantDatabase.findUnique).toHaveBeenCalledWith({
+        where: { storeId },
+        select: tenantProvisioningPublicSelect,
+      });
+      expect(JSON.stringify(safeRecord)).not.toMatch(
+        /databaseHost|databasePort|databaseUser|databasePasswordEncrypted|encryptionKeyVersion|postgresql:\/\//,
+      );
+    });
+
+    it('returns STORE_NOT_FOUND when status is requested for a missing Store', async () => {
+      const harness = makeHarness();
+      harness.prisma.store.findUnique.mockResolvedValue(null);
+
+      await expect(
+        harness.service.getProvisioningStatus(storeId),
+      ).rejects.toMatchObject({
+        code: TenantProvisioningErrorCode.STORE_NOT_FOUND,
+        message: 'Store was not found.',
+      });
+      expect(harness.prisma.tenantDatabase.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns PROVISIONING_NOT_FOUND when the Store has no provisioning record', async () => {
+      const harness = makeHarness();
+      harness.prisma.tenantDatabase.findUnique.mockResolvedValue(null);
+
+      await expect(
+        harness.service.getProvisioningStatus(storeId),
+      ).rejects.toMatchObject({
+        code: TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND,
+        message: 'Tenant provisioning record was not found.',
+      });
+    });
   });
 
   describe('new records', () => {

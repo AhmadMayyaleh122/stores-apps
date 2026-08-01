@@ -16,6 +16,7 @@ export enum TenantProvisioningErrorCode {
   VERIFICATION_FAILED = 'TENANT_VERIFICATION_FAILED',
   IDENTITY_CLEANUP_FAILED = 'TENANT_IDENTITY_CLEANUP_FAILED',
   STORE_NOT_FOUND = 'TENANT_STORE_NOT_FOUND',
+  PROVISIONING_NOT_FOUND = 'TENANT_PROVISIONING_NOT_FOUND',
   IDENTIFIER_CONFLICT = 'TENANT_IDENTIFIER_CONFLICT',
   RECORD_INTEGRITY_FAILED = 'TENANT_RECORD_INTEGRITY_FAILED',
   CONFIGURATION_DRIFT = 'TENANT_CONFIGURATION_DRIFT',
@@ -58,6 +59,8 @@ export const TENANT_PROVISIONING_SAFE_MESSAGES = {
   [TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED]:
     'Tenant database identity connection could not be closed.',
   [TenantProvisioningErrorCode.STORE_NOT_FOUND]: 'Store was not found.',
+  [TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND]:
+    'Tenant provisioning record was not found.',
   [TenantProvisioningErrorCode.IDENTIFIER_CONFLICT]:
     'Tenant database identifiers conflict with another record.',
   [TenantProvisioningErrorCode.RECORD_INTEGRITY_FAILED]:

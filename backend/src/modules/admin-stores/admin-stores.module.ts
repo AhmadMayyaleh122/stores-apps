@@ -3,11 +3,16 @@ import { JwtModule } from '@nestjs/jwt';
 
 import { DatabaseModule } from '../../database/database.module';
 import { AdminJwtAuthGuard } from '../admin-auth/guards/admin-jwt-auth.guard';
+import { TenantProvisioningModule } from '../tenant-provisioning/tenant-provisioning.module';
 import { AdminStoresController } from './admin-stores.controller';
 import { AdminStoresService } from './admin-stores.service';
 
 @Module({
-  imports: [DatabaseModule, JwtModule.register({})],
+  imports: [
+    DatabaseModule,
+    JwtModule.register({}),
+    TenantProvisioningModule,
+  ],
   controllers: [AdminStoresController],
   providers: [AdminStoresService, AdminJwtAuthGuard],
 })

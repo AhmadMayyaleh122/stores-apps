@@ -76,6 +76,20 @@ export class TenantProvisioningService {
     }
   }
 
+  async getProvisioningStatus(
+    storeId: string,
+  ): Promise<TenantProvisioningPublicRecord> {
+    const provisioning = await this.getStoreProvisioning(storeId);
+
+    if (!provisioning) {
+      throw createSafeError(
+        TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND,
+      );
+    }
+
+    return provisioning;
+  }
+
   private async provisionStoreInternal(
     storeId: string,
   ): Promise<TenantProvisioningResult> {

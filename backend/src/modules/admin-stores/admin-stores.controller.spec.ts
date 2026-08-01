@@ -1,6 +1,7 @@
 import { BadRequestException, ParseUUIDPipe } from '@nestjs/common';
 import {
   GUARDS_METADATA,
+  HTTP_CODE_METADATA,
   ROUTE_ARGS_METADATA,
 } from '@nestjs/common/constants';
 
@@ -14,6 +15,8 @@ import {
 import { AdminJwtAuthGuard } from '../admin-auth/guards/admin-jwt-auth.guard';
 import {
   AdminStoreResponse,
+  AdminStoreProvisioningResponse,
+  AdminStoreProvisioningRetryResponse,
   AdminStoreSubscriptionResponse,
   AdminStoreSubscriptionsListResponse,
   AdminStoresListResponse,
@@ -35,6 +38,8 @@ describe('AdminStoresController', () => {
       | 'getStoreById'
       | 'updateStore'
       | 'updateStoreStatus'
+      | 'getStoreProvisioning'
+      | 'retryStoreProvisioning'
       | 'getCurrentStoreSubscription'
       | 'listStoreSubscriptions'
       | 'createStoreSubscription'
@@ -59,6 +64,21 @@ describe('AdminStoresController', () => {
     updatedAt: new Date('2026-07-06T10:00:00.000Z'),
   };
 
+  const provisioning = {
+    id: '98765432-1234-4234-8123-456789012345',
+    storeId: store.id,
+    status: 'READY' as const,
+    databaseName: 'tenant_db_4de3dc53bceb44e1b94daab4f9a7b197',
+    attemptCount: 1,
+    provisioningStartedAt: new Date('2026-08-02T10:00:00.000Z'),
+    provisionedAt: new Date('2026-08-02T10:01:00.000Z'),
+    failedAt: null,
+    lastFailureCode: null,
+    lastFailureMessage: null,
+    createdAt: new Date('2026-08-02T10:00:00.000Z'),
+    updatedAt: new Date('2026-08-02T10:01:00.000Z'),
+  };
+
   beforeEach(() => {
     adminStoresService = {
       createStore: jest.fn(),
@@ -66,6 +86,8 @@ describe('AdminStoresController', () => {
       getStoreById: jest.fn(),
       updateStore: jest.fn(),
       updateStoreStatus: jest.fn(),
+      getStoreProvisioning: jest.fn(),
+      retryStoreProvisioning: jest.fn(),
       getCurrentStoreSubscription: jest.fn(),
       listStoreSubscriptions: jest.fn(),
       createStoreSubscription: jest.fn(),
@@ -207,6 +229,49 @@ describe('AdminStoresController', () => {
     expect(guards).toContain(AdminJwtAuthGuard);
   });
 
+  it('GET /admin/stores/:storeId/provisioning delegates and returns the safe response', async () => {
+    const serviceResponse: AdminStoreProvisioningResponse = {
+      success: true,
+      message: 'Store provisioning status retrieved successfully',
+      data: { provisioning },
+    };
+    adminStoresService.getStoreProvisioning.mockResolvedValue(serviceResponse);
+
+    await expect(
+      controller.getStoreProvisioning(store.id),
+    ).resolves.toEqual(serviceResponse);
+    expect(adminStoresService.getStoreProvisioning).toHaveBeenCalledWith(
+      store.id,
+    );
+    expect(JSON.stringify(serviceResponse)).not.toMatch(
+      /password|databaseHost|databaseUser|postgresql:\/\//i,
+    );
+  });
+
+  it('POST /admin/stores/:storeId/provisioning/retry delegates and returns the safe response', async () => {
+    const serviceResponse: AdminStoreProvisioningRetryResponse = {
+      success: true,
+      message: 'Store provisioning completed successfully',
+      data: { provisioning, alreadyReady: false },
+    };
+    adminStoresService.retryStoreProvisioning.mockResolvedValue(
+      serviceResponse,
+    );
+
+    await expect(
+      controller.retryStoreProvisioning(store.id),
+    ).resolves.toEqual(serviceResponse);
+    expect(adminStoresService.retryStoreProvisioning).toHaveBeenCalledWith(
+      store.id,
+    );
+    expect(
+      Reflect.getMetadata(
+        HTTP_CODE_METADATA,
+        AdminStoresController.prototype.retryStoreProvisioning,
+      ),
+    ).toBe(200);
+  });
+
   it('GET /admin/stores/:storeId/subscription delegates and forwards the response', async () => {
     const serviceResponse = createSubscriptionResponse(
       'Current store subscription retrieved successfully',
@@ -291,6 +356,8 @@ describe('AdminStoresController', () => {
     'listStoreSubscriptions',
     'createStoreSubscription',
     'startStoreTrial',
+    'getStoreProvisioning',
+    'retryStoreProvisioning',
   ] as const)('%s validates storeId as a UUID', async (methodName) => {
     await expectUuidPipeRejectsInvalidId(methodName, 'storeId');
   });
@@ -331,6 +398,8 @@ describe('AdminStoresController', () => {
       | 'getStoreById'
       | 'updateStore'
       | 'updateStoreStatus'
+      | 'getStoreProvisioning'
+      | 'retryStoreProvisioning'
       | 'getCurrentStoreSubscription'
       | 'listStoreSubscriptions'
       | 'createStoreSubscription'
