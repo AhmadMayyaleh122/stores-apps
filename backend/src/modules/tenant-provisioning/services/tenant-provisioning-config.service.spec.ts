@@ -1,5 +1,7 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+import * as tenantDatabaseUrlUtils from '../utils/tenant-database-url.util';
 import { TenantProvisioningConfigService } from './tenant-provisioning-config.service';
 
 describe('TenantProvisioningConfigService', () => {
@@ -17,6 +19,10 @@ describe('TenantProvisioningConfigService', () => {
     TENANT_CREDENTIAL_ENCRYPTION_KEY_V1: encodedKey,
     TENANT_MIGRATION_TIMEOUT_MS: '120000',
   };
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
 
   function createService(overrides: Record<string, unknown> = {}): {
     service: TenantProvisioningConfigService;
@@ -189,6 +195,36 @@ describe('TenantProvisioningConfigService', () => {
     expect(service.getProvisioningConfiguration().postgresAdminUrl).toBe(
       validValues.POSTGRES_ADMIN_URL,
     );
+  });
+
+  it('uses a generated validation credential without exposing or logging it', () => {
+    const urlBuilder = jest.spyOn(
+      tenantDatabaseUrlUtils,
+      'buildTenantDatabaseUrl',
+    );
+    const logSpies = [
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(),
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(),
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(),
+      jest.spyOn(Logger.prototype, 'debug').mockImplementation(),
+      jest.spyOn(console, 'log').mockImplementation(),
+      jest.spyOn(console, 'error').mockImplementation(),
+      jest.spyOn(console, 'warn').mockImplementation(),
+      jest.spyOn(console, 'debug').mockImplementation(),
+    ];
+    const { service } = createService();
+
+    const configuration = service.getProvisioningConfiguration();
+    const validationCredential = urlBuilder.mock.calls[0][0].password;
+
+    expect(urlBuilder).toHaveBeenCalledTimes(1);
+    expect(validationCredential).toEqual(expect.any(String));
+    expect(validationCredential).not.toHaveLength(0);
+    expect(validationCredential).not.toBe('configuration-validation-only');
+    expect(JSON.stringify(configuration)).not.toContain(validationCredential);
+    for (const spy of logSpies) {
+      expect(spy).not.toHaveBeenCalled();
+    }
   });
 
   it.each([

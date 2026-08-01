@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomBytes } from 'node:crypto';
 
 import {
   createTenantProvisioningError,
@@ -113,12 +114,14 @@ export class TenantProvisioningConfigService {
         DEFAULT_TENANT_MIGRATION_TIMEOUT_MS,
       );
 
+      const validationCredential = randomBytes(32).toString('base64url');
+
       buildTenantDatabaseUrl({
         hostname: tenantDatabaseHost,
         port: tenantDatabasePort,
         databaseName: 'tenant_db_validation',
         databaseUser: 'tenant_user_validation',
-        password: 'configuration-validation-only',
+        password: validationCredential,
         sslMode: tenantDatabaseSslMode,
       });
 
