@@ -62,10 +62,9 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "modules/admin-stores/**/*.(t|j)s",
+      "**/*.ts",
       "!**/*.spec.ts",
-      "!**/dto/**",
-      "!**/*.module.ts"
+      "!**/*.d.ts"
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
