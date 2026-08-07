@@ -46,7 +46,11 @@ export class AdminJwtAuthGuard implements CanActivate {
         throw this.createUnauthorizedException();
       }
 
-      if (request.user && request.user.sub !== payload.sub) {
+      if (
+        request.user &&
+        (!isCanonicalUuidV4(request.user.sub) ||
+          request.user.sub.toLowerCase() !== payload.sub.toLowerCase())
+      ) {
         throw this.createUnauthorizedException();
       }
 

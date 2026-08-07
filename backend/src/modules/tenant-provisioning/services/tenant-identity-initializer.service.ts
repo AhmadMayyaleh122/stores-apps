@@ -100,8 +100,7 @@ export class TenantIdentityInitializerService {
       const finalIdentity = await readIdentityForVerification(tenantPrisma);
 
       if (
-        !finalIdentity ||
-        finalIdentity.id !== 1 ||
+        finalIdentity?.id !== 1 ||
         finalIdentity.masterStoreId !== storeId
       ) {
         throw createIdentityError(
@@ -182,8 +181,7 @@ function requireMatchingIdentity(
   storeId: string,
 ): void {
   if (
-    !identity ||
-    identity.id !== 1 ||
+    identity?.id !== 1 ||
     identity.masterStoreId !== storeId
   ) {
     throw createIdentityError(TenantProvisioningErrorCode.IDENTITY_MISMATCH);

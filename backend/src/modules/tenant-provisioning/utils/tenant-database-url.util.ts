@@ -51,9 +51,9 @@ export function buildTenantDatabaseUrl(
     const url = new URL('postgresql://placeholder');
     url.hostname = hostname;
     url.port = String(options.port);
-    url.username = encodeURIComponent(databaseUser);
-    url.password = encodeURIComponent(options.password);
-    url.pathname = `/${encodeURIComponent(databaseName)}`;
+    url.username = databaseUser;
+    url.password = options.password;
+    url.pathname = `/${databaseName}`;
     url.searchParams.set('sslmode', options.sslMode);
 
     return url.toString();

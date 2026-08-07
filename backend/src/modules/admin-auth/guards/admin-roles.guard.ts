@@ -45,7 +45,7 @@ export class AdminRolesGuard implements CanActivate {
       });
     }
 
-    if (!requiredRoles || requiredRoles.length === 0) {
+    if (!requiredRoles?.length) {
       return true;
     }
 
@@ -59,8 +59,7 @@ export class AdminRolesGuard implements CanActivate {
     });
 
     if (
-      !admin ||
-      admin.status !== AdminStatus.ACTIVE ||
+      admin?.status !== AdminStatus.ACTIVE ||
       !requiredRoles.includes(admin.role)
     ) {
       throw new ForbiddenException({

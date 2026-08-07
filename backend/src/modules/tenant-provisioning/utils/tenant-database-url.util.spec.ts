@@ -19,20 +19,25 @@ describe('buildTenantDatabaseUrl', () => {
     });
   }
 
-  it('builds a PostgreSQL URL with encoded credentials and database name', () => {
-    const password = 'p@ss:/?#% word[]';
-    const value = build({ password });
-    const parsed = new URL(value);
+  it.each(['@', ':', '%', '/', ' '])(
+    'round-trips PostgreSQL credentials containing %j',
+    (reservedCharacter) => {
+      const password = `prefix@${reservedCharacter} suffix`;
+      const value = build({ password });
+      const parsed = new URL(value);
 
-    expect(parsed.protocol).toBe('postgresql:');
-    expect(decodeURIComponent(parsed.username)).toBe(identifiers.databaseUser);
-    expect(decodeURIComponent(parsed.password)).toBe(password);
-    expect(decodeURIComponent(parsed.pathname)).toBe(
-      `/${identifiers.databaseName}`,
-    );
-    expect(parsed.searchParams.get('sslmode')).toBe('verify-full');
-    expect(value).not.toContain(password);
-  });
+      expect(parsed.protocol).toBe('postgresql:');
+      expect(decodeWhatwgUrlComponent(parsed.username)).toBe(
+        identifiers.databaseUser,
+      );
+      expect(decodeWhatwgUrlComponent(parsed.password)).toBe(password);
+      expect(decodeWhatwgUrlComponent(parsed.pathname.slice(1))).toBe(
+        identifiers.databaseName,
+      );
+      expect(parsed.searchParams.get('sslmode')).toBe('verify-full');
+      expect(value).not.toContain(password);
+    },
+  );
 
   it.each([
     ['DNS', 'db.example.test'],
@@ -93,3 +98,7 @@ describe('buildTenantDatabaseUrl', () => {
     }
   });
 });
+
+function decodeWhatwgUrlComponent(value: string): string {
+  return decodeURIComponent(value.replace(/%(?![0-9a-f]{2})/gi, '%25'));
+}

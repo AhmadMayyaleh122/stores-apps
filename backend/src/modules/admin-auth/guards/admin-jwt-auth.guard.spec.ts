@@ -13,7 +13,7 @@ import { AdminJwtAuthGuard } from './admin-jwt-auth.guard';
 import { AdminRolesGuard } from './admin-roles.guard';
 
 describe('AdminJwtAuthGuard', () => {
-  const adminId = '12345678-1234-4234-8123-456789012345';
+  const adminId = 'a2345678-1234-4234-8123-456789012345';
   const otherAdminId = '87654321-4321-4321-8123-456789012345';
   const payload: AdminJwtPayload = {
     sub: adminId,
@@ -55,8 +55,32 @@ describe('AdminJwtAuthGuard', () => {
     expect(request.user).toBe(existingUser);
   });
 
+  it('preserves an existing user with the same UUID in different casing', async () => {
+    const existingUser = {
+      sub: adminId.toUpperCase(),
+      passportPrincipal: true,
+    };
+    const request = createRequest(existingUser);
+
+    expect(existingUser.sub).not.toBe(adminId);
+    await expect(guard.canActivate(createContext(request))).resolves.toBe(true);
+    expect(request.admin).toBe(payload);
+    expect(request.user).toBe(existingUser);
+  });
+
   it('rejects a conflicting existing request.user without assigning request.admin', async () => {
     const existingUser = { sub: otherAdminId };
+    const request = createRequest(existingUser);
+
+    await expect(guard.canActivate(createContext(request))).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(request.admin).toBeUndefined();
+    expect(request.user).toBe(existingUser);
+  });
+
+  it('rejects a non-string existing request.user sub', async () => {
+    const existingUser = { sub: 12345 };
     const request = createRequest(existingUser);
 
     await expect(guard.canActivate(createContext(request))).rejects.toBeInstanceOf(

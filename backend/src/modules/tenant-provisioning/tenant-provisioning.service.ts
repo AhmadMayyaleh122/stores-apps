@@ -121,14 +121,12 @@ export class TenantProvisioningService {
     const configuration = this.configService.getProvisioningConfiguration();
     const identifiers = createTenantDatabaseIdentifiers(storeId);
 
-    if (!record) {
-      record = await this.createOrRecoverPendingRecord(
-        storeId,
-        identifiers.databaseName,
-        identifiers.databaseUser,
-        configuration,
-      );
-    }
+    record ??= await this.createOrRecoverPendingRecord(
+      storeId,
+      identifiers.databaseName,
+      identifiers.databaseUser,
+      configuration,
+    );
 
     if (record.status === TenantProvisioningStatus.READY) {
       return {
@@ -177,11 +175,10 @@ export class TenantProvisioningService {
     });
 
     if (
-      !claimedRecord ||
-      claimedRecord.id !== record.id ||
-      claimedRecord.storeId !== record.storeId ||
-      claimedRecord.status !== TenantProvisioningStatus.PROVISIONING ||
-      claimedRecord.attemptCount !== expectedAttemptCount
+      claimedRecord?.id !== record.id ||
+      claimedRecord?.storeId !== record.storeId ||
+      claimedRecord?.status !== TenantProvisioningStatus.PROVISIONING ||
+      claimedRecord?.attemptCount !== expectedAttemptCount
     ) {
       throw createSafeError(
         TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
@@ -411,7 +408,7 @@ export class TenantProvisioningService {
       select: tenantProvisioningPublicSelect,
     });
 
-    if (!finalRecord || finalRecord.status !== TenantProvisioningStatus.READY) {
+    if (finalRecord?.status !== TenantProvisioningStatus.READY) {
       throw createSafeError(
         TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
       );

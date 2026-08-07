@@ -317,6 +317,14 @@ export class AdminStoresService {
       case TenantProvisioningErrorCode.CREDENTIAL_DECRYPTION_FAILED:
       case TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED:
         throw new InternalServerErrorException(response);
+      default:
+        throw new InternalServerErrorException({
+          success: false,
+          message: getTenantProvisioningSafeMessage(
+            TenantProvisioningErrorCode.PROVISIONING_FAILED,
+          ),
+          code: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+        });
     }
   }
 

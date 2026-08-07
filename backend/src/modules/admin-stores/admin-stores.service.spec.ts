@@ -19,6 +19,7 @@ import { PrismaService } from '../../database/prisma.service';
 import {
   createTenantProvisioningError,
   getTenantProvisioningSafeMessage,
+  TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning/tenant-provisioning.errors';
 import { TenantProvisioningService } from '../tenant-provisioning/tenant-provisioning.service';
@@ -799,6 +800,36 @@ describe('AdminStoresService', () => {
       await expect(
         service.retryStoreProvisioning(baseStore.id),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('maps an unexpected runtime provisioning code to a generic safe error', async () => {
+      const internalDetails =
+        'unexpected code from postgresql://admin:secret@localhost/postgres';
+      tenantProvisioning.provisionStore.mockRejectedValue(
+        new TenantProvisioningError(
+          'TENANT_FUTURE_INTERNAL_FAILURE' as TenantProvisioningErrorCode,
+          internalDetails,
+        ),
+      );
+
+      let caught: unknown;
+      try {
+        await service.retryStoreProvisioning(baseStore.id);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(HttpException);
+      expect((caught as HttpException).getStatus()).toBe(
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+      expect((caught as HttpException).getResponse()).toEqual({
+        success: false,
+        message: 'Tenant database provisioning failed.',
+        code: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+      });
+      expect(JSON.stringify(caught)).not.toContain(internalDetails);
+      expect(caught).toBeDefined();
     });
 
     it.each([

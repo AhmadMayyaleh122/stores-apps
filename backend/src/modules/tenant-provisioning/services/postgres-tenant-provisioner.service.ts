@@ -261,8 +261,7 @@ export class PostgresTenantProvisionerService {
     }
 
     if (
-      !database ||
-      database.datname !== databaseName ||
+      database?.datname !== databaseName ||
       database.owner_name !== databaseUser
     ) {
       throw createSafeError(
@@ -337,8 +336,7 @@ function roleMatches(
   ownershipMarker: string,
 ): boolean {
   return Boolean(
-    role &&
-      role.rolname === databaseUser &&
+    role?.rolname === databaseUser &&
       role.rolcanlogin === true &&
       role.rolsuper === false &&
       role.rolcreatedb === false &&
