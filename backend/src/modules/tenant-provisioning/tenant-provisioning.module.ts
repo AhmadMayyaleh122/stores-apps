@@ -7,6 +7,7 @@ import { PostgresTenantProvisionerService } from './services/postgres-tenant-pro
 import { TenantCredentialEncryptionService } from './services/tenant-credential-encryption.service';
 import { TenantIdentityInitializerService } from './services/tenant-identity-initializer.service';
 import { TenantMigrationRunnerService } from './services/tenant-migration-runner.service';
+import { TenantOwnerInitializerService } from './services/tenant-owner-initializer.service';
 import { TenantProvisioningConfigService } from './services/tenant-provisioning-config.service';
 
 @Module({
@@ -17,6 +18,7 @@ import { TenantProvisioningConfigService } from './services/tenant-provisioning-
     PostgresTenantProvisionerService,
     TenantMigrationRunnerService,
     TenantIdentityInitializerService,
+    TenantOwnerInitializerService,
     TenantProvisioningService,
   ],
   exports: [
@@ -25,6 +27,7 @@ import { TenantProvisioningConfigService } from './services/tenant-provisioning-
     PostgresTenantProvisionerService,
     TenantMigrationRunnerService,
     TenantIdentityInitializerService,
+    TenantOwnerInitializerService,
     TenantProvisioningService,
   ],
 })

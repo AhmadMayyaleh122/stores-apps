@@ -15,6 +15,9 @@ export enum TenantProvisioningErrorCode {
   IDENTITY_INITIALIZATION_FAILED = 'TENANT_IDENTITY_INITIALIZATION_FAILED',
   VERIFICATION_FAILED = 'TENANT_VERIFICATION_FAILED',
   IDENTITY_CLEANUP_FAILED = 'TENANT_IDENTITY_CLEANUP_FAILED',
+  OWNER_CONFLICT = 'TENANT_OWNER_CONFLICT',
+  OWNER_INITIALIZATION_FAILED = 'TENANT_OWNER_INITIALIZATION_FAILED',
+  OWNER_CLEANUP_FAILED = 'TENANT_OWNER_CLEANUP_FAILED',
   STORE_NOT_FOUND = 'TENANT_STORE_NOT_FOUND',
   PROVISIONING_NOT_FOUND = 'TENANT_PROVISIONING_NOT_FOUND',
   IDENTIFIER_CONFLICT = 'TENANT_IDENTIFIER_CONFLICT',
@@ -58,6 +61,12 @@ export const TENANT_PROVISIONING_SAFE_MESSAGES = {
     'Tenant database identity could not be verified.',
   [TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED]:
     'Tenant database identity connection could not be closed.',
+  [TenantProvisioningErrorCode.OWNER_CONFLICT]:
+    'Tenant store owner conflicts with the expected initialization state.',
+  [TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED]:
+    'Tenant store owner could not be initialized.',
+  [TenantProvisioningErrorCode.OWNER_CLEANUP_FAILED]:
+    'Tenant store owner connection could not be closed.',
   [TenantProvisioningErrorCode.STORE_NOT_FOUND]: 'Store was not found.',
   [TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND]:
     'Tenant provisioning record was not found.',

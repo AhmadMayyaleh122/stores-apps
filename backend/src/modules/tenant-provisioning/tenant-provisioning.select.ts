@@ -1,5 +1,16 @@
 import { Prisma } from '../../../generated/prisma/client';
 
+export const tenantOwnerBootstrapStoreSelect = {
+  id: true,
+  ownerName: true,
+  ownerEmail: true,
+  ownerPhone: true,
+} satisfies Prisma.StoreSelect;
+
+export type TenantOwnerBootstrapStoreRecord = Prisma.StoreGetPayload<{
+  select: typeof tenantOwnerBootstrapStoreSelect;
+}>;
+
 export const tenantProvisioningPublicSelect = {
   id: true,
   storeId: true,

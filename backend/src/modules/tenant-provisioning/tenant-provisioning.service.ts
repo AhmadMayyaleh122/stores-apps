@@ -7,6 +7,7 @@ import { PostgresTenantProvisionerService } from './services/postgres-tenant-pro
 import { TenantCredentialEncryptionService } from './services/tenant-credential-encryption.service';
 import { TenantIdentityInitializerService } from './services/tenant-identity-initializer.service';
 import { TenantMigrationRunnerService } from './services/tenant-migration-runner.service';
+import { TenantOwnerInitializerService } from './services/tenant-owner-initializer.service';
 import {
   TenantProvisioningConfiguration,
   TenantProvisioningConfigService,
@@ -20,6 +21,8 @@ import {
 import {
   tenantProvisioningInternalSelect,
   TenantProvisioningInternalRecord,
+  tenantOwnerBootstrapStoreSelect,
+  TenantOwnerBootstrapStoreRecord,
   tenantProvisioningPublicSelect,
   TenantProvisioningPublicRecord,
 } from './tenant-provisioning.select';
@@ -48,6 +51,7 @@ export class TenantProvisioningService {
     private readonly postgresProvisioner: PostgresTenantProvisionerService,
     private readonly migrationRunner: TenantMigrationRunnerService,
     private readonly identityInitializer: TenantIdentityInitializerService,
+    private readonly ownerInitializer: TenantOwnerInitializerService,
   ) {}
 
   async provisionStore(storeId: string): Promise<TenantProvisioningResult> {
@@ -93,7 +97,7 @@ export class TenantProvisioningService {
   private async provisionStoreInternal(
     storeId: string,
   ): Promise<TenantProvisioningResult> {
-    await this.requireStore(storeId);
+    const store = await this.requireStoreForProvisioning(storeId);
     let record = await this.prismaService.tenantDatabase.findUnique({
       where: { storeId },
       select: tenantProvisioningInternalSelect,
@@ -195,6 +199,7 @@ export class TenantProvisioningService {
 
       return await this.executeClaimedAttempt(
         claimedRecord,
+        store,
         configuration,
         expectedAttemptCount,
       );
@@ -214,6 +219,21 @@ export class TenantProvisioningService {
     if (!store) {
       throw createSafeError(TenantProvisioningErrorCode.STORE_NOT_FOUND);
     }
+  }
+
+  private async requireStoreForProvisioning(
+    storeId: string,
+  ): Promise<TenantOwnerBootstrapStoreRecord> {
+    const store = await this.prismaService.store.findUnique({
+      where: { id: storeId },
+      select: tenantOwnerBootstrapStoreSelect,
+    });
+
+    if (!store) {
+      throw createSafeError(TenantProvisioningErrorCode.STORE_NOT_FOUND);
+    }
+
+    return store;
   }
 
   private async createOrRecoverPendingRecord(
@@ -331,6 +351,7 @@ export class TenantProvisioningService {
 
   private async executeClaimedAttempt(
     record: TenantProvisioningInternalRecord,
+    store: TenantOwnerBootstrapStoreRecord,
     configuration: TenantProvisioningConfiguration,
     attemptCount: number,
   ): Promise<TenantProvisioningResult> {
@@ -379,6 +400,14 @@ export class TenantProvisioningService {
     await this.identityInitializer.initializeAndVerify({
       tenantDatabaseUrl,
       storeId: record.storeId,
+      connectionTimeoutMs: configuration.tenantPostgresConnectionTimeoutMs,
+    });
+    await this.ownerInitializer.initialize({
+      tenantDatabaseUrl,
+      storeId: store.id,
+      fullName: store.ownerName,
+      email: store.ownerEmail,
+      phone: store.ownerPhone,
       connectionTimeoutMs: configuration.tenantPostgresConnectionTimeoutMs,
     });
 

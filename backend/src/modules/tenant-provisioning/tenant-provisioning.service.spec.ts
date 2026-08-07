@@ -6,6 +6,7 @@ import { PostgresTenantProvisionerService } from './services/postgres-tenant-pro
 import { TenantCredentialEncryptionService } from './services/tenant-credential-encryption.service';
 import { TenantIdentityInitializerService } from './services/tenant-identity-initializer.service';
 import { TenantMigrationRunnerService } from './services/tenant-migration-runner.service';
+import { TenantOwnerInitializerService } from './services/tenant-owner-initializer.service';
 import {
   TenantProvisioningConfiguration,
   TenantProvisioningConfigService,
@@ -17,7 +18,10 @@ import {
   TenantProvisioningError,
   TenantProvisioningErrorCode,
 } from './tenant-provisioning.errors';
-import { tenantProvisioningPublicSelect } from './tenant-provisioning.select';
+import {
+  tenantOwnerBootstrapStoreSelect,
+  tenantProvisioningPublicSelect,
+} from './tenant-provisioning.select';
 import { TenantProvisioningService } from './tenant-provisioning.service';
 import * as tenantDatabaseUrlUtils from './utils/tenant-database-url.util';
 
@@ -27,6 +31,9 @@ const databaseName = 'tenant_db_12345678123442348123456789012345';
 const databaseUser = 'tenant_user_12345678123442348123456789012345';
 const encryptedPassword = 'v1:k1:safe-iv:safe-tag:safe-ciphertext';
 const plaintextPassword = 'not-returned-plaintext-password';
+const ownerName = 'Demo Owner';
+const ownerEmail = 'owner@example.com';
+const ownerPhone = '+970599000000';
 const now = new Date('2026-07-28T12:00:00.000Z');
 
 const configuration: TenantProvisioningConfiguration = {
@@ -70,7 +77,12 @@ function makeRecord(
 function makeHarness() {
   const prisma = {
     store: {
-      findUnique: jest.fn().mockResolvedValue({ id: storeId }),
+      findUnique: jest.fn().mockResolvedValue({
+        id: storeId,
+        ownerName,
+        ownerEmail,
+        ownerPhone,
+      }),
     },
     tenantDatabase: {
       findUnique: jest.fn(),
@@ -96,6 +108,9 @@ function makeHarness() {
   const identity = {
     initializeAndVerify: jest.fn().mockResolvedValue(undefined),
   };
+  const owner = {
+    initialize: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new TenantProvisioningService(
     prisma as unknown as PrismaService,
     config as unknown as TenantProvisioningConfigService,
@@ -103,9 +118,19 @@ function makeHarness() {
     postgres as unknown as PostgresTenantProvisionerService,
     migration as unknown as TenantMigrationRunnerService,
     identity as unknown as TenantIdentityInitializerService,
+    owner as unknown as TenantOwnerInitializerService,
   );
 
-  return { service, prisma, config, encryption, postgres, migration, identity };
+  return {
+    service,
+    prisma,
+    config,
+    encryption,
+    postgres,
+    migration,
+    identity,
+    owner,
+  };
 }
 
 function arrangeExistingSuccess(
@@ -161,7 +186,7 @@ describe('TenantProvisioningService', () => {
       });
       expect(harness.prisma.store.findUnique).toHaveBeenCalledWith({
         where: { id: storeId },
-        select: { id: true },
+        select: tenantOwnerBootstrapStoreSelect,
       });
       expect(harness.config.getProvisioningConfiguration).not.toHaveBeenCalled();
     });
@@ -381,6 +406,7 @@ describe('TenantProvisioningService', () => {
       expect(harness.encryption.decryptPassword).not.toHaveBeenCalled();
       expect(harness.prisma.tenantDatabase.updateMany).not.toHaveBeenCalled();
       expect(harness.postgres.ensureTenantInfrastructure).not.toHaveBeenCalled();
+      expect(harness.owner.initialize).not.toHaveBeenCalled();
       expect(JSON.stringify(result)).not.toContain(encryptedPassword);
     });
 
@@ -807,6 +833,18 @@ describe('TenantProvisioningService', () => {
         storeId,
         connectionTimeoutMs: configuration.tenantPostgresConnectionTimeoutMs,
       });
+      expect(harness.prisma.store.findUnique).toHaveBeenCalledWith({
+        where: { id: storeId },
+        select: tenantOwnerBootstrapStoreSelect,
+      });
+      expect(harness.owner.initialize).toHaveBeenCalledWith({
+        tenantDatabaseUrl: tenantUrl,
+        storeId,
+        fullName: ownerName,
+        email: ownerEmail,
+        phone: ownerPhone,
+        connectionTimeoutMs: configuration.tenantPostgresConnectionTimeoutMs,
+      });
       expect(
         harness.encryption.decryptPassword.mock.invocationCallOrder[0],
       ).toBeLessThan(
@@ -825,6 +863,11 @@ describe('TenantProvisioningService', () => {
       );
       expect(
         harness.identity.initializeAndVerify.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        harness.owner.initialize.mock.invocationCallOrder[0],
+      );
+      expect(
+        harness.owner.initialize.mock.invocationCallOrder[0],
       ).toBeLessThan(
         harness.prisma.tenantDatabase.updateMany.mock.invocationCallOrder[1],
       );
@@ -855,6 +898,25 @@ describe('TenantProvisioningService', () => {
       expect(serializedResult).not.toContain(tenantUrl);
       expect(serializedResult).not.toContain(plaintextPassword);
       expect(serializedResult).not.toContain(configuration.postgresAdminUrl);
+      expect(serializedResult).not.toContain(ownerEmail);
+      expect(serializedResult).not.toContain(ownerPhone);
+    });
+
+    it('forwards a nullable owner phone without changing it', async () => {
+      const harness = makeHarness();
+      harness.prisma.store.findUnique.mockResolvedValue({
+        id: storeId,
+        ownerName,
+        ownerEmail,
+        ownerPhone: null,
+      });
+      arrangeExistingSuccess(harness);
+
+      await harness.service.provisionStore(storeId);
+
+      expect(harness.owner.initialize).toHaveBeenCalledWith(
+        expect.objectContaining({ phone: null }),
+      );
     });
 
     it('fails safely when the fenced READY update loses ownership', async () => {
@@ -874,11 +936,119 @@ describe('TenantProvisioningService', () => {
       await expect(harness.service.provisionStore(storeId)).rejects.toMatchObject({
         code: TenantProvisioningErrorCode.PROVISIONING_STATE_CONFLICT,
       });
+      expect(harness.owner.initialize).toHaveBeenCalledTimes(1);
       expect(harness.prisma.tenantDatabase.updateMany.mock.calls[2][0].where).toEqual({
         id: recordId,
         status: TenantProvisioningStatus.PROVISIONING,
         attemptCount: 1,
       });
+    });
+
+    it('retries idempotent owner initialization after READY persistence fails', async () => {
+      const harness = makeHarness();
+      const pending = makeRecord();
+      const claimedFirst = makeRecord({
+        status: TenantProvisioningStatus.PROVISIONING,
+        attemptCount: 1,
+      });
+      const failed = makeRecord({
+        status: TenantProvisioningStatus.FAILED,
+        attemptCount: 1,
+        lastFailureCode: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+        lastFailureMessage: getTenantProvisioningSafeMessage(
+          TenantProvisioningErrorCode.PROVISIONING_FAILED,
+        ),
+      });
+      const claimedRetry = makeRecord({
+        status: TenantProvisioningStatus.PROVISIONING,
+        attemptCount: 2,
+      });
+      const ready = makeRecord({
+        status: TenantProvisioningStatus.READY,
+        attemptCount: 2,
+        provisionedAt: now,
+      });
+      harness.prisma.tenantDatabase.findUnique
+        .mockResolvedValueOnce(pending)
+        .mockResolvedValueOnce(claimedFirst)
+        .mockResolvedValueOnce(failed)
+        .mockResolvedValueOnce(claimedRetry)
+        .mockResolvedValueOnce(ready);
+      harness.prisma.tenantDatabase.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockRejectedValueOnce(new Error('raw READY persistence detail'))
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 1 });
+
+      await expect(harness.service.provisionStore(storeId)).rejects.toMatchObject({
+        code: TenantProvisioningErrorCode.PROVISIONING_FAILED,
+      });
+      await expect(harness.service.provisionStore(storeId)).resolves.toMatchObject({
+        alreadyReady: false,
+        provisioning: {
+          status: TenantProvisioningStatus.READY,
+          attemptCount: 2,
+        },
+      });
+
+      expect(harness.owner.initialize).toHaveBeenCalledTimes(2);
+      expect(harness.encryption.generatePassword).not.toHaveBeenCalled();
+    });
+
+    it('retries a FAILED owner initialization and reaches READY', async () => {
+      const harness = makeHarness();
+      const pending = makeRecord();
+      const claimedFirst = makeRecord({
+        status: TenantProvisioningStatus.PROVISIONING,
+        attemptCount: 1,
+      });
+      const failed = makeRecord({
+        status: TenantProvisioningStatus.FAILED,
+        attemptCount: 1,
+        lastFailureCode:
+          TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+        lastFailureMessage: getTenantProvisioningSafeMessage(
+          TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+        ),
+      });
+      const claimedRetry = makeRecord({
+        status: TenantProvisioningStatus.PROVISIONING,
+        attemptCount: 2,
+      });
+      const ready = makeRecord({
+        status: TenantProvisioningStatus.READY,
+        attemptCount: 2,
+        provisionedAt: now,
+      });
+      harness.prisma.tenantDatabase.findUnique
+        .mockResolvedValueOnce(pending)
+        .mockResolvedValueOnce(claimedFirst)
+        .mockResolvedValueOnce(failed)
+        .mockResolvedValueOnce(claimedRetry)
+        .mockResolvedValueOnce(ready);
+      harness.prisma.tenantDatabase.updateMany.mockResolvedValue({ count: 1 });
+      harness.owner.initialize
+        .mockRejectedValueOnce(
+          new TenantProvisioningError(
+            TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+            `raw:${ownerName}:${ownerEmail}:${ownerPhone}`,
+          ),
+        )
+        .mockResolvedValueOnce(undefined);
+
+      await expect(harness.service.provisionStore(storeId)).rejects.toMatchObject({
+        code: TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+        message: getTenantProvisioningSafeMessage(
+          TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+        ),
+      });
+      await expect(harness.service.provisionStore(storeId)).resolves.toMatchObject({
+        alreadyReady: false,
+        provisioning: { status: TenantProvisioningStatus.READY },
+      });
+
+      expect(harness.owner.initialize).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -935,6 +1105,21 @@ describe('TenantProvisioningService', () => {
         'initializeAndVerify',
         TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED,
       ],
+      [
+        'owner conflict',
+        'initializeOwner',
+        TenantProvisioningErrorCode.OWNER_CONFLICT,
+      ],
+      [
+        'owner initialization',
+        'initializeOwner',
+        TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+      ],
+      [
+        'owner cleanup',
+        'initializeOwner',
+        TenantProvisioningErrorCode.OWNER_CLEANUP_FAILED,
+      ],
     ])(
       'persists a sanitized fenced FAILED state for %s failure',
       async (_label, method, code) => {
@@ -951,7 +1136,7 @@ describe('TenantProvisioningService', () => {
           tenantDatabaseUrlUtils,
           'buildTenantDatabaseUrl',
         );
-        const raw = `raw:${plaintextPassword}:${encryptedPassword}:${configuration.postgresAdminUrl}`;
+        const raw = `raw:${plaintextPassword}:${encryptedPassword}:${configuration.postgresAdminUrl}:${ownerName}:${ownerEmail}:${ownerPhone}`;
         const failure = new TenantProvisioningError(code, raw);
 
         if (method === 'decryptPassword') {
@@ -962,6 +1147,8 @@ describe('TenantProvisioningService', () => {
           harness.postgres.ensureTenantInfrastructure.mockRejectedValue(failure);
         } else if (method === 'runMigrations') {
           harness.migration.runMigrations.mockRejectedValue(failure);
+        } else if (method === 'initializeOwner') {
+          harness.owner.initialize.mockRejectedValue(failure);
         } else {
           harness.identity.initializeAndVerify.mockRejectedValue(failure);
         }
@@ -994,12 +1181,20 @@ describe('TenantProvisioningService', () => {
         expect(JSON.stringify(caught)).not.toContain(plaintextPassword);
         expect((caught as Error).message).not.toContain(encryptedPassword);
         expect((caught as Error).message).not.toContain('postgresql://');
+        expect((caught as Error).message).not.toContain(ownerEmail);
+        expect(JSON.stringify(failedUpdate)).not.toContain(ownerName);
+        expect(JSON.stringify(failedUpdate)).not.toContain(ownerEmail);
+        expect(JSON.stringify(failedUpdate)).not.toContain(ownerPhone);
         if (method === 'ensureTenantInfrastructure') {
           expect(urlSpy).not.toHaveBeenCalled();
           expect(harness.migration.runMigrations).not.toHaveBeenCalled();
           expect(harness.identity.initializeAndVerify).not.toHaveBeenCalled();
+          expect(harness.owner.initialize).not.toHaveBeenCalled();
         } else if (method === 'runMigrations') {
           expect(harness.identity.initializeAndVerify).not.toHaveBeenCalled();
+          expect(harness.owner.initialize).not.toHaveBeenCalled();
+        } else if (method === 'initializeAndVerify') {
+          expect(harness.owner.initialize).not.toHaveBeenCalled();
         }
         expect(
           harness.prisma.tenantDatabase.updateMany.mock.calls.some(
@@ -1211,6 +1406,7 @@ describe('TenantProvisioningService', () => {
       });
       expect(harness.migration.runMigrations).not.toHaveBeenCalled();
       expect(harness.identity.initializeAndVerify).not.toHaveBeenCalled();
+      expect(harness.owner.initialize).not.toHaveBeenCalled();
     });
   });
 });
