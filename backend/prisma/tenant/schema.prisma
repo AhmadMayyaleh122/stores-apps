@@ -7,10 +7,47 @@ datasource db {
   provider = "postgresql"
 }
 
+enum EmployeeStatus {
+  PENDING_ACTIVATION
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
 model TenantIdentity {
   id            Int      @id(map: "tenant_identity_pkey") @default(1)
   masterStoreId String   @unique(map: "tenant_identity_master_store_id_key") @map("master_store_id") @db.Uuid
   initializedAt DateTime @default(now()) @map("initialized_at")
 
   @@map("tenant_identity")
+}
+
+model Role {
+  id        String     @id(map: "roles_pkey") @default(uuid()) @db.Uuid
+  key       String     @unique(map: "roles_key_key") @db.VarChar(64)
+  name      String     @db.VarChar(100)
+  isSystem  Boolean    @default(false) @map("is_system")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  employees Employee[]
+
+  @@map("roles")
+}
+
+model Employee {
+  id             String         @id(map: "employees_pkey") @default(uuid()) @db.Uuid
+  fullName       String         @map("full_name") @db.VarChar(120)
+  email          String         @unique(map: "employees_email_key") @db.VarChar(255)
+  phone          String?        @db.VarChar(40)
+  roleId         String         @map("role_id") @db.Uuid
+  status         EmployeeStatus @default(PENDING_ACTIVATION)
+  isStoreOwner   Boolean        @default(false) @map("is_store_owner")
+  masterStoreId  String?        @unique(map: "employees_master_store_id_key") @map("master_store_id") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  role           Role           @relation(fields: [roleId], references: [id], onDelete: Restrict, map: "employees_role_id_fkey")
+
+  @@index([roleId], map: "employees_role_id_idx")
+  @@index([status], map: "employees_status_idx")
+  @@map("employees")
 }
