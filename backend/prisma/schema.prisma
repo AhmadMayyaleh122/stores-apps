@@ -61,6 +61,13 @@ enum IntegrationType {
   DELIVERY
 }
 
+enum TenantProvisioningStatus {
+  PENDING
+  PROVISIONING
+  READY
+  FAILED
+}
+
 model Admin {
   id           String          @id @default(uuid()) @db.Uuid
   fullName     String          @map("full_name")
@@ -97,8 +104,34 @@ model Store {
   features                  StoreFeature[]
   apiIntegrations           ApiIntegration[]
   billingSubscriptions      BillingSubscription[]
+  tenantDatabase            TenantDatabase?
 
   @@map("stores")
+}
+
+model TenantDatabase {
+  id                        String                   @id(map: "tenant_databases_pkey") @default(uuid()) @db.Uuid
+  storeId                   String                   @unique(map: "tenant_databases_store_id_key") @map("store_id") @db.Uuid
+  status                    TenantProvisioningStatus @default(PENDING)
+  databaseName              String                   @unique(map: "tenant_databases_database_name_key") @map("database_name")
+  databaseHost              String?                  @map("database_host")
+  databasePort              Int?                     @map("database_port")
+  databaseUser              String?                  @unique(map: "tenant_databases_database_user_key") @map("database_user")
+  databasePasswordEncrypted String?                  @map("database_password_encrypted")
+  encryptionKeyVersion      Int?                     @map("encryption_key_version")
+  provisioningStartedAt     DateTime?                @map("provisioning_started_at")
+  provisionedAt             DateTime?                @map("provisioned_at")
+  failedAt                  DateTime?                @map("failed_at")
+  lastFailureCode           String?                  @map("last_failure_code")
+  lastFailureMessage        String?                  @map("last_failure_message")
+  attemptCount              Int                      @default(0) @map("attempt_count")
+  createdAt                 DateTime                 @default(now()) @map("created_at")
+  updatedAt                 DateTime                 @updatedAt @map("updated_at")
+  store                     Store                    @relation(fields: [storeId], references: [id], onDelete: Cascade, map: "tenant_databases_store_id_fkey")
+
+  @@index([status], map: "tenant_databases_status_idx")
+  @@index([createdAt], map: "tenant_databases_created_at_idx")
+  @@map("tenant_databases")
 }
 
 model SubscriptionPlan {

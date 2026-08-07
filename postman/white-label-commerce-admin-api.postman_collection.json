@@ -456,6 +456,167 @@
           "response": []
         },
         {
+          "name": "Get Store Provisioning Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const responseJson = pm.response.json();",
+                  "const serialized = JSON.stringify(responseJson);",
+                  "",
+                  "pm.test('Response contains only safe provisioning data', function () {",
+                  "  pm.expect(responseJson).to.have.nested.property('data.provisioning');",
+                  "  pm.expect(serialized).not.to.include('databasePasswordEncrypted');",
+                  "  pm.expect(serialized).not.to.include('encryptionKeyVersion');",
+                  "  pm.expect(serialized).not.to.include('databaseHost');",
+                  "  pm.expect(serialized).not.to.include('databaseUser');",
+                  "  pm.expect(serialized).not.to.include('postgresql://');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/stores/{{createdStoreId}}/provisioning",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "stores",
+                "{{createdStoreId}}",
+                "provisioning"
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "READY",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Store provisioning status retrieved successfully\",\n  \"data\": {\n    \"provisioning\": {\n      \"id\": \"98765432-1234-4234-8123-456789012345\",\n      \"storeId\": \"4de3dc53-bceb-44e1-b94d-aab4f9a7b197\",\n      \"status\": \"READY\",\n      \"databaseName\": \"tenant_db_4de3dc53bceb44e1b94daab4f9a7b197\",\n      \"attemptCount\": 1,\n      \"provisioningStartedAt\": \"2026-08-02T10:00:00.000Z\",\n      \"provisionedAt\": \"2026-08-02T10:01:00.000Z\",\n      \"failedAt\": null,\n      \"lastFailureCode\": null,\n      \"lastFailureMessage\": null,\n      \"createdAt\": \"2026-08-02T10:00:00.000Z\",\n      \"updatedAt\": \"2026-08-02T10:01:00.000Z\"\n    }\n  }\n}"
+            },
+            {
+              "name": "FAILED",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Store provisioning status retrieved successfully\",\n  \"data\": {\n    \"provisioning\": {\n      \"id\": \"98765432-1234-4234-8123-456789012345\",\n      \"storeId\": \"4de3dc53-bceb-44e1-b94d-aab4f9a7b197\",\n      \"status\": \"FAILED\",\n      \"databaseName\": \"tenant_db_4de3dc53bceb44e1b94daab4f9a7b197\",\n      \"attemptCount\": 1,\n      \"provisioningStartedAt\": \"2026-08-02T10:00:00.000Z\",\n      \"provisionedAt\": null,\n      \"failedAt\": \"2026-08-02T10:01:00.000Z\",\n      \"lastFailureCode\": \"TENANT_MIGRATION_FAILED\",\n      \"lastFailureMessage\": \"Tenant database migration failed.\",\n      \"createdAt\": \"2026-08-02T10:00:00.000Z\",\n      \"updatedAt\": \"2026-08-02T10:01:00.000Z\"\n    }\n  }\n}"
+            },
+            {
+              "name": "PROVISIONING",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Store provisioning status retrieved successfully\",\n  \"data\": {\n    \"provisioning\": {\n      \"id\": \"98765432-1234-4234-8123-456789012345\",\n      \"storeId\": \"4de3dc53-bceb-44e1-b94d-aab4f9a7b197\",\n      \"status\": \"PROVISIONING\",\n      \"databaseName\": \"tenant_db_4de3dc53bceb44e1b94daab4f9a7b197\",\n      \"attemptCount\": 2,\n      \"provisioningStartedAt\": \"2026-08-02T10:05:00.000Z\",\n      \"provisionedAt\": null,\n      \"failedAt\": null,\n      \"lastFailureCode\": null,\n      \"lastFailureMessage\": null,\n      \"createdAt\": \"2026-08-02T10:00:00.000Z\",\n      \"updatedAt\": \"2026-08-02T10:05:00.000Z\"\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "Retry Store Provisioning",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const responseJson = pm.response.json();",
+                  "const serialized = JSON.stringify(responseJson);",
+                  "",
+                  "pm.test('Retry response is safe', function () {",
+                  "  pm.expect(responseJson).to.have.nested.property('data.provisioning');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.alreadyReady');",
+                  "  pm.expect(serialized).not.to.include('databasePasswordEncrypted');",
+                  "  pm.expect(serialized).not.to.include('encryptionKeyVersion');",
+                  "  pm.expect(serialized).not.to.include('postgresql://');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/stores/{{createdStoreId}}/provisioning/retry",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "stores",
+                "{{createdStoreId}}",
+                "provisioning",
+                "retry"
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "Provisioning Completed",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Store provisioning completed successfully\",\n  \"data\": {\n    \"provisioning\": {\n      \"id\": \"98765432-1234-4234-8123-456789012345\",\n      \"storeId\": \"4de3dc53-bceb-44e1-b94d-aab4f9a7b197\",\n      \"status\": \"READY\",\n      \"databaseName\": \"tenant_db_4de3dc53bceb44e1b94daab4f9a7b197\",\n      \"attemptCount\": 2,\n      \"provisioningStartedAt\": \"2026-08-02T10:05:00.000Z\",\n      \"provisionedAt\": \"2026-08-02T10:06:00.000Z\",\n      \"failedAt\": null,\n      \"lastFailureCode\": null,\n      \"lastFailureMessage\": null,\n      \"createdAt\": \"2026-08-02T10:00:00.000Z\",\n      \"updatedAt\": \"2026-08-02T10:06:00.000Z\"\n    },\n    \"alreadyReady\": false\n  }\n}"
+            },
+            {
+              "name": "Already READY",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Store provisioning is already complete\",\n  \"data\": {\n    \"provisioning\": {\n      \"id\": \"98765432-1234-4234-8123-456789012345\",\n      \"storeId\": \"4de3dc53-bceb-44e1-b94d-aab4f9a7b197\",\n      \"status\": \"READY\",\n      \"databaseName\": \"tenant_db_4de3dc53bceb44e1b94daab4f9a7b197\",\n      \"attemptCount\": 2,\n      \"provisioningStartedAt\": \"2026-08-02T10:05:00.000Z\",\n      \"provisionedAt\": \"2026-08-02T10:06:00.000Z\",\n      \"failedAt\": null,\n      \"lastFailureCode\": null,\n      \"lastFailureMessage\": null,\n      \"createdAt\": \"2026-08-02T10:00:00.000Z\",\n      \"updatedAt\": \"2026-08-02T10:06:00.000Z\"\n    },\n    \"alreadyReady\": true\n  }\n}"
+            },
+            {
+              "name": "Provisioning In Progress",
+              "status": "Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\n  \"success\": false,\n  \"message\": \"Tenant database provisioning is already in progress.\",\n  \"code\": \"TENANT_PROVISIONING_IN_PROGRESS\"\n}"
+            }
+          ]
+        },
+        {
           "name": "Get Current Store Subscription",
           "request": {
             "method": "GET",

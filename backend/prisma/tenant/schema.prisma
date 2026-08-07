@@ -1,0 +1,16 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../../generated/tenant-prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model TenantIdentity {
+  id            Int      @id(map: "tenant_identity_pkey") @default(1)
+  masterStoreId String   @unique(map: "tenant_identity_master_store_id_key") @map("master_store_id") @db.Uuid
+  initializedAt DateTime @default(now()) @map("initialized_at")
+
+  @@map("tenant_identity")
+}

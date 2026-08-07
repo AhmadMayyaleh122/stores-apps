@@ -22,6 +22,14 @@ async function bootstrap(): Promise<void> {
       { path: 'admin/stores/:id', method: RequestMethod.PATCH },
       { path: 'admin/stores/:id/status', method: RequestMethod.PATCH },
       {
+        path: 'admin/stores/:storeId/provisioning',
+        method: RequestMethod.GET,
+      },
+      {
+        path: 'admin/stores/:storeId/provisioning/retry',
+        method: RequestMethod.POST,
+      },
+      {
         path: 'admin/stores/:storeId/subscription',
         method: RequestMethod.GET,
       },
