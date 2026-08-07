@@ -888,6 +888,15 @@ describe('AdminStoresService', () => {
         TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED,
         HttpStatus.INTERNAL_SERVER_ERROR,
       ],
+      [TenantProvisioningErrorCode.OWNER_CONFLICT, HttpStatus.CONFLICT],
+      [
+        TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.OWNER_CLEANUP_FAILED,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      ],
       [TenantProvisioningErrorCode.STORE_NOT_FOUND, HttpStatus.NOT_FOUND],
       [
         TenantProvisioningErrorCode.PROVISIONING_NOT_FOUND,
@@ -931,6 +940,45 @@ describe('AdminStoresService', () => {
         code,
       });
     });
+
+    it.each([
+      [TenantProvisioningErrorCode.OWNER_CONFLICT, HttpStatus.CONFLICT],
+      [
+        TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
+        HttpStatus.SERVICE_UNAVAILABLE,
+      ],
+      [
+        TenantProvisioningErrorCode.OWNER_CLEANUP_FAILED,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      ],
+    ])(
+      'does not expose owner details when translating %s',
+      async (code, status) => {
+        const rawDetails =
+          'Demo Owner|owner@example.com|+970599000000|postgresql://tenant:secret@internal/tenant|raw Prisma detail';
+        tenantProvisioning.provisionStore.mockRejectedValue(
+          new TenantProvisioningError(code, rawDetails),
+        );
+
+        let caught: unknown;
+        try {
+          await service.retryStoreProvisioning(baseStore.id);
+        } catch (error) {
+          caught = error;
+        }
+
+        expect(caught).toBeInstanceOf(HttpException);
+        expect((caught as HttpException).getStatus()).toBe(status);
+        expect((caught as HttpException).getResponse()).toEqual({
+          success: false,
+          message: getTenantProvisioningSafeMessage(code),
+          code,
+        });
+        expect(JSON.stringify(caught)).not.toContain(rawDetails);
+        expect(JSON.stringify(caught)).not.toContain('owner@example.com');
+        expect(JSON.stringify(caught)).not.toContain('postgresql://');
+      },
+    );
 
     it('returns no credentials or connection URL from retry', async () => {
       const response = await service.retryStoreProvisioning(baseStore.id);

@@ -296,6 +296,7 @@ export class AdminStoresService {
       case TenantProvisioningErrorCode.ROLE_CONFLICT:
       case TenantProvisioningErrorCode.DATABASE_OWNER_CONFLICT:
       case TenantProvisioningErrorCode.IDENTITY_MISMATCH:
+      case TenantProvisioningErrorCode.OWNER_CONFLICT:
       case TenantProvisioningErrorCode.IDENTIFIER_CONFLICT:
       case TenantProvisioningErrorCode.RECORD_INTEGRITY_FAILED:
       case TenantProvisioningErrorCode.CONFIGURATION_DRIFT:
@@ -311,11 +312,13 @@ export class AdminStoresService {
       case TenantProvisioningErrorCode.MIGRATION_FAILED:
       case TenantProvisioningErrorCode.IDENTITY_INITIALIZATION_FAILED:
       case TenantProvisioningErrorCode.VERIFICATION_FAILED:
+      case TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED:
       case TenantProvisioningErrorCode.PROVISIONING_FAILED:
         throw new ServiceUnavailableException(response);
       case TenantProvisioningErrorCode.CREDENTIAL_ENCRYPTION_FAILED:
       case TenantProvisioningErrorCode.CREDENTIAL_DECRYPTION_FAILED:
       case TenantProvisioningErrorCode.IDENTITY_CLEANUP_FAILED:
+      case TenantProvisioningErrorCode.OWNER_CLEANUP_FAILED:
         throw new InternalServerErrorException(response);
       default:
         throw new InternalServerErrorException({
