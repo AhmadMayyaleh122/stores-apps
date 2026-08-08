@@ -51,6 +51,15 @@ export interface TenantProvisioningConfiguration {
   readonly activeEncryptionKey: TenantProvisioningEncryptionKey;
 }
 
+export interface TenantAccessConfiguration {
+  readonly tenantDatabaseHost: string;
+  readonly tenantDatabasePort: number;
+  readonly tenantDatabaseSslMode: TenantDatabaseSslMode;
+  readonly tenantPostgresConnectionTimeoutMs: number;
+  readonly encryptionKeyVersion: number;
+  readonly encryptionKey: TenantProvisioningEncryptionKey;
+}
+
 export class TenantProvisioningEncryptionKey {
   readonly #keyMaterial: Buffer;
 
@@ -67,6 +76,32 @@ export class TenantProvisioningEncryptionKey {
 @Injectable()
 export class TenantProvisioningConfigService {
   constructor(private readonly configService: ConfigService) {}
+
+  getTenantAccessConfiguration(
+    storedEncryptionKeyVersion: unknown,
+  ): TenantAccessConfiguration {
+    try {
+      const connectionConfiguration = readTenantConnectionConfiguration(
+        this.configService,
+      );
+      validateTenantConnectionConfiguration(connectionConfiguration);
+      const encryptionKeyVersion = readSupportedEncryptionKeyVersion(
+        storedEncryptionKeyVersion,
+      );
+      const encryptionKey = readEncryptionKey(
+        this.configService,
+        encryptionKeyVersion,
+      );
+
+      return Object.freeze({
+        ...connectionConfiguration,
+        encryptionKeyVersion,
+        encryptionKey,
+      });
+    } catch (error) {
+      preserveOrThrowInvalidConfiguration(error);
+    }
+  }
 
   getProvisioningConfiguration(): TenantProvisioningConfiguration {
     try {
@@ -90,83 +125,112 @@ export class TenantProvisioningConfigService {
         }
       }
 
-      const tenantDatabaseHost = readStringWithDefault(
-        this.configService.get<unknown>('TENANT_DATABASE_HOST'),
-        DEFAULT_TENANT_DATABASE_HOST,
+      const connectionConfiguration = readTenantConnectionConfiguration(
+        this.configService,
       );
-      const tenantDatabasePort = readPositiveIntegerWithDefault(
-        this.configService.get<unknown>('TENANT_DATABASE_PORT'),
-        DEFAULT_TENANT_DATABASE_PORT,
-        65535,
-      );
-      const tenantDatabaseSslMode = readSslMode(
-        this.configService.get<unknown>('TENANT_DATABASE_SSL_MODE'),
-      );
-      const tenantPostgresConnectionTimeoutMs =
-        readPositiveIntegerWithDefault(
-          this.configService.get<unknown>(
-            'TENANT_POSTGRES_CONNECTION_TIMEOUT_MS',
-          ),
-          DEFAULT_TENANT_POSTGRES_CONNECTION_TIMEOUT_MS,
-        );
       const tenantMigrationTimeoutMs = readPositiveIntegerWithDefault(
         this.configService.get<unknown>('TENANT_MIGRATION_TIMEOUT_MS'),
         DEFAULT_TENANT_MIGRATION_TIMEOUT_MS,
       );
+      validateTenantConnectionConfiguration(connectionConfiguration);
 
-      const validationCredential = randomBytes(32).toString('base64url');
-
-      buildTenantDatabaseUrl({
-        hostname: tenantDatabaseHost,
-        port: tenantDatabasePort,
-        databaseName: 'tenant_db_validation',
-        databaseUser: 'tenant_user_validation',
-        password: validationCredential,
-        sslMode: tenantDatabaseSslMode,
-      });
-
-      const activeEncryptionKeyVersion = readRequiredPositiveInteger(
+      const activeEncryptionKeyVersion = readSupportedEncryptionKeyVersion(
         this.configService.get<unknown>(
           'TENANT_CREDENTIAL_ENCRYPTION_KEY_VERSION',
         ),
       );
-
-      if (activeEncryptionKeyVersion !== SUPPORTED_ENCRYPTION_KEY_VERSION) {
-        throwInvalidConfiguration();
-      }
-
-      const encodedEncryptionKey = requireNonEmptyString(
-        this.configService.get<unknown>(
-          `TENANT_CREDENTIAL_ENCRYPTION_KEY_V${activeEncryptionKeyVersion}`,
-        ),
+      const activeEncryptionKey = readEncryptionKey(
+        this.configService,
+        activeEncryptionKeyVersion,
       );
-      const activeEncryptionKey = decodeEncryptionKey(encodedEncryptionKey);
-      const controlledEncryptionKey = new TenantProvisioningEncryptionKey(
-        activeEncryptionKey,
-      );
-      activeEncryptionKey.fill(0);
 
       return Object.freeze({
         postgresAdminUrl,
-        tenantDatabaseHost,
-        tenantDatabasePort,
-        tenantDatabaseSslMode,
-        tenantPostgresConnectionTimeoutMs,
+        ...connectionConfiguration,
         tenantMigrationTimeoutMs,
         activeEncryptionKeyVersion,
-        activeEncryptionKey: controlledEncryptionKey,
+        activeEncryptionKey,
       });
     } catch (error) {
-      if (
-        error instanceof TenantProvisioningError &&
-        error.code === TenantProvisioningErrorCode.CONFIGURATION_INVALID
-      ) {
-        throw error;
-      }
-
-      throwInvalidConfiguration();
+      preserveOrThrowInvalidConfiguration(error);
     }
   }
+}
+
+function readTenantConnectionConfiguration(
+  configService: ConfigService,
+): Omit<
+  TenantAccessConfiguration,
+  'encryptionKeyVersion' | 'encryptionKey'
+> {
+  const tenantDatabaseHost = readStringWithDefault(
+    configService.get<unknown>('TENANT_DATABASE_HOST'),
+    DEFAULT_TENANT_DATABASE_HOST,
+  );
+  const tenantDatabasePort = readPositiveIntegerWithDefault(
+    configService.get<unknown>('TENANT_DATABASE_PORT'),
+    DEFAULT_TENANT_DATABASE_PORT,
+    65535,
+  );
+  const tenantDatabaseSslMode = readSslMode(
+    configService.get<unknown>('TENANT_DATABASE_SSL_MODE'),
+  );
+  const tenantPostgresConnectionTimeoutMs = readPositiveIntegerWithDefault(
+    configService.get<unknown>('TENANT_POSTGRES_CONNECTION_TIMEOUT_MS'),
+    DEFAULT_TENANT_POSTGRES_CONNECTION_TIMEOUT_MS,
+  );
+  return {
+    tenantDatabaseHost,
+    tenantDatabasePort,
+    tenantDatabaseSslMode,
+    tenantPostgresConnectionTimeoutMs,
+  };
+}
+
+function validateTenantConnectionConfiguration(
+  configuration: Omit<
+    TenantAccessConfiguration,
+    'encryptionKeyVersion' | 'encryptionKey'
+  >,
+): void {
+  const validationCredential = randomBytes(32).toString('base64url');
+
+  buildTenantDatabaseUrl({
+    hostname: configuration.tenantDatabaseHost,
+    port: configuration.tenantDatabasePort,
+    databaseName: 'tenant_db_validation',
+    databaseUser: 'tenant_user_validation',
+    password: validationCredential,
+    sslMode: configuration.tenantDatabaseSslMode,
+  });
+}
+
+function readSupportedEncryptionKeyVersion(value: unknown): number {
+  const encryptionKeyVersion = readRequiredPositiveInteger(value);
+
+  if (encryptionKeyVersion !== SUPPORTED_ENCRYPTION_KEY_VERSION) {
+    throwInvalidConfiguration();
+  }
+
+  return encryptionKeyVersion;
+}
+
+function readEncryptionKey(
+  configService: ConfigService,
+  encryptionKeyVersion: number,
+): TenantProvisioningEncryptionKey {
+  const encodedEncryptionKey = requireNonEmptyString(
+    configService.get<unknown>(
+      `TENANT_CREDENTIAL_ENCRYPTION_KEY_V${encryptionKeyVersion}`,
+    ),
+  );
+  const encryptionKey = decodeEncryptionKey(encodedEncryptionKey);
+  const controlledEncryptionKey = new TenantProvisioningEncryptionKey(
+    encryptionKey,
+  );
+  encryptionKey.fill(0);
+
+  return controlledEncryptionKey;
 }
 
 function parseDatabaseTarget(value: string, requireUsername: boolean): DatabaseTarget {
@@ -344,6 +408,17 @@ function decodeEncryptionKey(value: string): Buffer {
   }
 
   return decoded;
+}
+
+function preserveOrThrowInvalidConfiguration(error: unknown): never {
+  if (
+    error instanceof TenantProvisioningError &&
+    error.code === TenantProvisioningErrorCode.CONFIGURATION_INVALID
+  ) {
+    throw error;
+  }
+
+  throwInvalidConfiguration();
 }
 
 function throwInvalidConfiguration(): never {

@@ -27,7 +27,10 @@ import {
   TenantProvisioningPublicRecord,
 } from './tenant-provisioning.select';
 import { createTenantDatabaseIdentifiers } from './utils/tenant-database-identifier.util';
-import { buildTenantDatabaseUrl } from './utils/tenant-database-url.util';
+import {
+  buildTenantDatabaseUrl,
+  normalizeTenantDatabaseHostname,
+} from './utils/tenant-database-url.util';
 
 const CANONICAL_UUID_V4_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -503,41 +506,22 @@ function assertRecordIntegrity(
   }
 
   if (
-    normalizeHostname(record.databaseHost) !==
-      normalizeHostname(configuration.tenantDatabaseHost) ||
+    normalizeProvisioningHostname(record.databaseHost) !==
+      normalizeProvisioningHostname(configuration.tenantDatabaseHost) ||
     record.databasePort !== configuration.tenantDatabasePort
   ) {
     throw createSafeError(TenantProvisioningErrorCode.CONFIGURATION_DRIFT);
   }
 }
 
-function normalizeHostname(hostname: string): string {
-  let normalized = hostname.trim().toLowerCase();
-
-  if (normalized.startsWith('[') && normalized.endsWith(']')) {
-    normalized = normalized.slice(1, -1);
-  }
-
-  if (!normalized.includes(':') && normalized.endsWith('.')) {
-    normalized = normalized.slice(0, -1);
-  }
-
-  if (!normalized) {
+function normalizeProvisioningHostname(hostname: string): string {
+  try {
+    return normalizeTenantDatabaseHostname(hostname);
+  } catch {
     throw createSafeError(
       TenantProvisioningErrorCode.RECORD_INTEGRITY_FAILED,
     );
   }
-
-  if (
-    normalized === 'localhost' ||
-    normalized.startsWith('127.') ||
-    normalized === '::1' ||
-    normalized === '0:0:0:0:0:0:0:1'
-  ) {
-    return 'loopback';
-  }
-
-  return normalized;
 }
 
 function requireCanonicalUuidV4(value: string): string {

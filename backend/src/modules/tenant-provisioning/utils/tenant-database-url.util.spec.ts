@@ -1,5 +1,8 @@
 import { createTenantDatabaseIdentifiers } from './tenant-database-identifier.util';
-import { buildTenantDatabaseUrl } from './tenant-database-url.util';
+import {
+  buildTenantDatabaseUrl,
+  normalizeTenantDatabaseHostname,
+} from './tenant-database-url.util';
 
 describe('buildTenantDatabaseUrl', () => {
   const identifiers = createTenantDatabaseIdentifiers(
@@ -97,6 +100,49 @@ describe('buildTenantDatabaseUrl', () => {
       expect((error as Error).message).not.toContain(password);
     }
   });
+});
+
+describe('normalizeTenantDatabaseHostname', () => {
+  it.each([
+    ['localhost', 'loopback'],
+    ['LOCALHOST.', 'loopback'],
+    ['127.0.0.1', 'loopback'],
+    ['127.0.0.25', 'loopback'],
+    ['127.255.255.254', 'loopback'],
+    ['[::1]', 'loopback'],
+    ['::1', 'loopback'],
+    ['0:0:0:0:0:0:0:1', 'loopback'],
+    ['DB.EXAMPLE.TEST.', 'db.example.test'],
+    ['192.0.2.25', '192.0.2.25'],
+    ['[2001:DB8::25]', '2001:db8::25'],
+  ])('normalizes %s to %s', (hostname, expected) => {
+    expect(normalizeTenantDatabaseHostname(hostname)).toBe(expected);
+  });
+
+  it.each([
+    ['127.attacker.example', '127.attacker.example'],
+    ['127.attacker.example.', '127.attacker.example'],
+    ['127.Attacker.Example', '127.attacker.example'],
+    ['127.0.example', '127.0.example'],
+  ])('does not classify DNS hostname %s as loopback', (hostname, expected) => {
+    expect(normalizeTenantDatabaseHostname(hostname)).toBe(expected);
+    expect(normalizeTenantDatabaseHostname(hostname)).not.toBe('loopback');
+  });
+
+  it('rejects an empty hostname safely', () => {
+    expect(() => normalizeTenantDatabaseHostname('  ')).toThrow(
+      'Tenant database URL configuration is invalid.',
+    );
+  });
+
+  it.each(['[127.0.0.1]', '[db.example.test]'])(
+    'rejects non-IPv6 bracketed hostname %s',
+    (hostname) => {
+      expect(() => normalizeTenantDatabaseHostname(hostname)).toThrow(
+        'Tenant database URL configuration is invalid.',
+      );
+    },
+  );
 });
 
 function decodeWhatwgUrlComponent(value: string): string {

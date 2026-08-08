@@ -7,6 +7,13 @@ export enum StoreAuthErrorCode {
   ACTIVATION_TOKEN_HASHING_FAILED =
     'STORE_AUTH_ACTIVATION_TOKEN_HASHING_FAILED',
   CONFIGURATION_INVALID = 'STORE_AUTH_CONFIGURATION_INVALID',
+  STORE_SLUG_INVALID = 'STORE_AUTH_STORE_SLUG_INVALID',
+  TENANT_UNAVAILABLE = 'STORE_AUTH_TENANT_UNAVAILABLE',
+  TENANT_CONFIGURATION_INVALID =
+    'STORE_AUTH_TENANT_CONFIGURATION_INVALID',
+  TENANT_IDENTITY_INVALID = 'STORE_AUTH_TENANT_IDENTITY_INVALID',
+  TENANT_ACCESS_FAILED = 'STORE_AUTH_TENANT_ACCESS_FAILED',
+  TENANT_CLEANUP_FAILED = 'STORE_AUTH_TENANT_CLEANUP_FAILED',
 }
 
 export const STORE_AUTH_SAFE_MESSAGES = {
@@ -22,6 +29,16 @@ export const STORE_AUTH_SAFE_MESSAGES = {
     'Activation token could not be secured.',
   [StoreAuthErrorCode.CONFIGURATION_INVALID]:
     'Store owner activation configuration is invalid.',
+  [StoreAuthErrorCode.STORE_SLUG_INVALID]: 'Store identifier is invalid.',
+  [StoreAuthErrorCode.TENANT_UNAVAILABLE]: 'Store tenant is unavailable.',
+  [StoreAuthErrorCode.TENANT_CONFIGURATION_INVALID]:
+    'Store tenant configuration is invalid.',
+  [StoreAuthErrorCode.TENANT_IDENTITY_INVALID]:
+    'Store tenant identity could not be verified.',
+  [StoreAuthErrorCode.TENANT_ACCESS_FAILED]:
+    'Store tenant could not be accessed.',
+  [StoreAuthErrorCode.TENANT_CLEANUP_FAILED]:
+    'Store tenant connection could not be closed.',
 } as const satisfies Record<StoreAuthErrorCode, string>;
 
 export class StoreAuthError extends Error {

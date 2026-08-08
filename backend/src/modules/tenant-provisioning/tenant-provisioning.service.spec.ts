@@ -788,6 +788,32 @@ describe('TenantProvisioningService', () => {
       },
     );
 
+    it.each([
+      '127.attacker.example',
+      '127.attacker.example.',
+      '127.Attacker.Example',
+      '127.0.example',
+    ])(
+      'does not treat DNS hostname %s as configured localhost',
+      async (databaseHost) => {
+        const harness = makeHarness();
+        harness.config.getProvisioningConfiguration.mockReturnValue({
+          ...configuration,
+          tenantDatabaseHost: 'localhost',
+        });
+        harness.prisma.tenantDatabase.findUnique.mockResolvedValue(
+          makeRecord({ databaseHost }),
+        );
+
+        await expect(
+          harness.service.provisionStore(storeId),
+        ).rejects.toMatchObject({
+          code: TenantProvisioningErrorCode.CONFIGURATION_DRIFT,
+        });
+        expect(harness.prisma.tenantDatabase.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
     it('fails safely when host normalization becomes empty', async () => {
       const harness = makeHarness();
       harness.config.getProvisioningConfiguration.mockReturnValue({
