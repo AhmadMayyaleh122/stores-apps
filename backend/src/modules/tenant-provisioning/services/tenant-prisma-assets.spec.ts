@@ -19,6 +19,8 @@ const { copyTenantPrismaAssets } = require('../../../../scripts/copy-tenant-pris
 
 const INITIAL_MIGRATION = '20260728194854_init_tenant_schema';
 const STORE_OWNER_MIGRATION = '20260807193344_store_owner_foundation';
+const STORE_OWNER_ACTIVATION_MIGRATION =
+  '20260808192202_store_owner_activation_credentials';
 
 describe('copyTenantPrismaAssets', () => {
   let temporaryRoot: string;
@@ -93,6 +95,7 @@ describe('copyTenantPrismaAssets', () => {
     ).toEqual([
       INITIAL_MIGRATION,
       STORE_OWNER_MIGRATION,
+      STORE_OWNER_ACTIVATION_MIGRATION,
       'migration_lock.toml',
     ]);
     expect(
@@ -103,6 +106,17 @@ describe('copyTenantPrismaAssets', () => {
           'tenant',
           'migrations',
           INITIAL_MIGRATION,
+        ),
+      ),
+    ).toEqual(['migration.sql']);
+    expect(
+      await sortedNames(
+        path.join(
+          outputRoot,
+          'prisma',
+          'tenant',
+          'migrations',
+          STORE_OWNER_ACTIVATION_MIGRATION,
         ),
       ),
     ).toEqual(['migration.sql']);
@@ -142,6 +156,22 @@ describe('copyTenantPrismaAssets', () => {
         'tenant',
         'migrations',
         INITIAL_MIGRATION,
+        'migration.sql',
+      ),
+    );
+    await expectFileContentsMatch(
+      path.join(
+        'prisma',
+        'tenant',
+        'migrations',
+        STORE_OWNER_ACTIVATION_MIGRATION,
+        'migration.sql',
+      ),
+      path.join(
+        'prisma',
+        'tenant',
+        'migrations',
+        STORE_OWNER_ACTIVATION_MIGRATION,
         'migration.sql',
       ),
     );
@@ -218,6 +248,10 @@ describe('copyTenantPrismaAssets', () => {
     await mkdir(path.join(tenantMigrationRoot, STORE_OWNER_MIGRATION), {
       recursive: true,
     });
+    await mkdir(
+      path.join(tenantMigrationRoot, STORE_OWNER_ACTIVATION_MIGRATION),
+      { recursive: true },
+    );
     await writeFile(
       path.join(sourceRoot, 'prisma.tenant.config.ts'),
       'tenant config',
@@ -249,6 +283,15 @@ describe('copyTenantPrismaAssets', () => {
         'migration.sql',
       ),
       'CREATE TABLE roles (); CREATE TABLE employees ();',
+      'utf8',
+    );
+    await writeFile(
+      path.join(
+        tenantMigrationRoot,
+        STORE_OWNER_ACTIVATION_MIGRATION,
+        'migration.sql',
+      ),
+      'CREATE TABLE employee_credentials (); CREATE TABLE employee_activation_tokens ();',
       'utf8',
     );
     await writeFile(path.join(sourceRoot, '.env'), 'SECRET=do-not-copy', 'utf8');
