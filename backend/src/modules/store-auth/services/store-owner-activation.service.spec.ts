@@ -32,6 +32,7 @@ describe('StoreOwnerActivationService', () => {
   let tenantAccess: StoreAuthTenantAccess;
   let withResolvedTenant: jest.Mock;
   let checkOwnerActivationEligibility: jest.Mock;
+  let findOwnerLoginCredential: jest.Mock;
   let issueOwnerActivation: jest.Mock;
   let activateOwner: jest.Mock;
   let generate: jest.Mock;
@@ -43,6 +44,7 @@ describe('StoreOwnerActivationService', () => {
 
   beforeEach(() => {
     checkOwnerActivationEligibility = jest.fn().mockResolvedValue(true);
+    findOwnerLoginCredential = jest.fn().mockResolvedValue(null);
     issueOwnerActivation = jest.fn().mockResolvedValue({
       issuedAt,
       expiresAt,
@@ -50,6 +52,7 @@ describe('StoreOwnerActivationService', () => {
     activateOwner = jest.fn().mockResolvedValue({ activatedAt });
     tenantAccess = Object.freeze({
       kind: 'STORE_AUTH_TENANT_ACCESS' as const,
+      findOwnerLoginCredential,
       checkOwnerActivationEligibility,
       issueOwnerActivation,
       activateOwner,

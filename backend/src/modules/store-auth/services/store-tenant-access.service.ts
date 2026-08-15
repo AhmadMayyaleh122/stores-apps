@@ -23,6 +23,7 @@ import {
   buildTenantDatabaseUrl,
   normalizeTenantDatabaseHostname,
 } from '../../tenant-provisioning/utils/tenant-database-url.util';
+import { normalizeTenantOwnerEmail } from '../../tenant-provisioning/utils/tenant-owner-email.util';
 import {
   createStoreAuthError,
   STORE_AUTH_SAFE_MESSAGES,
@@ -89,6 +90,25 @@ interface ActivationTokenRecord {
   expiresAt: Date;
   consumedAt: Date | null;
   revokedAt: Date | null;
+}
+
+interface OwnerLoginRecord {
+  id: string;
+  email: string;
+  roleId: string;
+  status: EmployeeStatus;
+  isStoreOwner: boolean;
+  masterStoreId: string | null;
+  role: {
+    id: string;
+    key: string;
+    name: string;
+    isSystem: boolean;
+  };
+  credential: {
+    employeeId: string;
+    passwordHash: string;
+  } | null;
 }
 
 interface TenantStoreAuthTransactionBoundary {
@@ -169,6 +189,10 @@ interface TenantStoreAuthAdvisoryClientBoundary {
     ...values: unknown[]
   ): Promise<T>;
   employee: {
+    findUnique(options: {
+      where: { email: string };
+      select: typeof OWNER_LOGIN_SELECT;
+    }): Promise<OwnerLoginRecord | null>;
     findMany(options: {
       where: { isStoreOwner: true };
       select: typeof ACTIVATION_OWNER_SELECT;
@@ -207,6 +231,9 @@ export interface VerifiedStoreTenantContext {
 
 export interface StoreAuthTenantAccess {
   readonly kind: 'STORE_AUTH_TENANT_ACCESS';
+  findOwnerLoginCredential(
+    input: FindOwnerLoginCredentialInput,
+  ): Promise<OwnerLoginCredential | null>;
   checkOwnerActivationEligibility(
     input: CheckOwnerActivationEligibilityInput,
   ): Promise<boolean>;
@@ -214,6 +241,16 @@ export interface StoreAuthTenantAccess {
     input: IssueOwnerActivationMutation,
   ): Promise<OwnerActivationIssuanceOutcome>;
   activateOwner(input: ActivateOwnerMutation): Promise<ActivateOwnerOutcome>;
+}
+
+export interface FindOwnerLoginCredentialInput {
+  readonly email: string;
+}
+
+export interface OwnerLoginCredential {
+  readonly ownerId: string;
+  readonly email: string;
+  readonly passwordHash: string;
 }
 
 export interface CheckOwnerActivationEligibilityInput {
@@ -472,6 +509,29 @@ const ACTIVATION_OWNER_SELECT = {
   },
 } as const;
 
+const OWNER_LOGIN_SELECT = {
+  id: true,
+  email: true,
+  roleId: true,
+  status: true,
+  isStoreOwner: true,
+  masterStoreId: true,
+  role: {
+    select: {
+      id: true,
+      key: true,
+      name: true,
+      isSystem: true,
+    },
+  },
+  credential: {
+    select: {
+      employeeId: true,
+      passwordHash: true,
+    },
+  },
+} as const;
+
 const ACTIVATION_TOKEN_SELECT = {
   id: true,
   employeeId: true,
@@ -494,6 +554,9 @@ function createStoreAuthTenantAccess(
   return Object.freeze(
     Object.assign(Object.create(null) as object, {
       kind: 'STORE_AUTH_TENANT_ACCESS' as const,
+      findOwnerLoginCredential: async (
+        input: FindOwnerLoginCredentialInput,
+      ) => findOwnerLoginCredential(advisoryClient, storeId, input),
       checkOwnerActivationEligibility: async (
         input: CheckOwnerActivationEligibilityInput,
       ) =>
@@ -522,6 +585,63 @@ function createStoreAuthTenantAccess(
       },
     }),
   ) as StoreAuthTenantAccess;
+}
+
+async function findOwnerLoginCredential(
+  tenantPrisma: TenantStoreAuthAdvisoryClientBoundary,
+  storeId: string,
+  input: FindOwnerLoginCredentialInput,
+): Promise<OwnerLoginCredential | null> {
+  const canonicalEmail = normalizeTenantOwnerEmail(input.email);
+
+  if (canonicalEmail === null) {
+    throw createStoreAuthError(StoreAuthErrorCode.INVALID_STORE_CREDENTIALS);
+  }
+
+  const owner = await tenantPrisma.employee.findUnique({
+    where: { email: canonicalEmail },
+    select: OWNER_LOGIN_SELECT,
+  });
+
+  if (!isEligibleLoginOwner(owner, storeId, canonicalEmail)) {
+    return null;
+  }
+
+  return Object.freeze({
+    ownerId: normalizeCanonicalUuid(owner.id),
+    email: owner.email,
+    passwordHash: owner.credential.passwordHash,
+  });
+}
+
+function isEligibleLoginOwner(
+  owner: OwnerLoginRecord | null,
+  storeId: string,
+  canonicalEmail: string,
+): owner is OwnerLoginRecord & {
+  credential: NonNullable<OwnerLoginRecord['credential']>;
+} {
+  try {
+    return (
+      owner !== null &&
+      normalizeCanonicalUuid(owner.id) ===
+        normalizeCanonicalUuid(owner.credential?.employeeId as string) &&
+      owner.email === canonicalEmail &&
+      owner.status === EmployeeStatus.ACTIVE &&
+      owner.isStoreOwner === true &&
+      normalizeCanonicalUuid(owner.masterStoreId as string) === storeId &&
+      normalizeCanonicalUuid(owner.roleId) ===
+        normalizeCanonicalUuid(owner.role.id) &&
+      owner.role.key === 'OWNER' &&
+      owner.role.name === 'Owner' &&
+      owner.role.isSystem === true &&
+      typeof owner.credential?.passwordHash === 'string' &&
+      owner.credential.passwordHash.length > 0 &&
+      owner.credential.passwordHash.length <= 255
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function checkOwnerActivationEligibility(

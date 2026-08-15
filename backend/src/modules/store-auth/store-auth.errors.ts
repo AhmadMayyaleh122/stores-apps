@@ -20,6 +20,7 @@ export enum StoreAuthErrorCode {
     'STORE_AUTH_OWNER_ACTIVATION_ISSUANCE_FAILED',
   OWNER_ACTIVATION_INVALID = 'STORE_AUTH_OWNER_ACTIVATION_INVALID',
   OWNER_ACTIVATION_FAILED = 'STORE_AUTH_OWNER_ACTIVATION_FAILED',
+  INVALID_STORE_CREDENTIALS = 'STORE_AUTH_INVALID_STORE_CREDENTIALS',
 }
 
 export const STORE_AUTH_SAFE_MESSAGES = {
@@ -53,6 +54,8 @@ export const STORE_AUTH_SAFE_MESSAGES = {
     'Store owner activation is invalid or no longer available.',
   [StoreAuthErrorCode.OWNER_ACTIVATION_FAILED]:
     'Store owner activation could not be completed.',
+  [StoreAuthErrorCode.INVALID_STORE_CREDENTIALS]:
+    'Store credentials are invalid.',
 } as const satisfies Record<StoreAuthErrorCode, string>;
 
 export class StoreAuthError extends Error {

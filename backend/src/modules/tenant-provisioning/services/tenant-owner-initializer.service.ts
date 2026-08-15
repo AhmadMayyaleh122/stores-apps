@@ -1,7 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { isEmail } from 'class-validator';
-
 import {
   EmployeeStatus,
   PrismaClient as TenantPrismaClient,
@@ -12,11 +10,11 @@ import {
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
 import { normalizeCanonicalUuid } from '../utils/tenant-database-identifier.util';
+import { normalizeTenantOwnerEmail } from '../utils/tenant-owner-email.util';
 
 const OWNER_ROLE_KEY = 'OWNER';
 const OWNER_ROLE_NAME = 'Owner';
 const MAX_FULL_NAME_LENGTH = 120;
-const MAX_EMAIL_LENGTH = 255;
 const MAX_PHONE_LENGTH = 40;
 const MAX_UNIQUE_RACE_RETRIES = 2;
 
@@ -454,10 +452,11 @@ function normalizeOptions(
     options.fullName,
     MAX_FULL_NAME_LENGTH,
   );
-  const email = normalizeEmail(options.email);
+  const email = normalizeTenantOwnerEmail(options.email);
   const phone = normalizePhone(options.phone);
 
   if (
+    email === null ||
     typeof options.tenantDatabaseUrl !== 'string' ||
     options.tenantDatabaseUrl.trim().length === 0 ||
     !Number.isInteger(options.connectionTimeoutMs) ||
@@ -488,18 +487,6 @@ function normalizeRequiredString(value: unknown, maximumLength: number): string 
   const normalized = value.trim();
 
   if (normalized.length === 0 || normalized.length > maximumLength) {
-    throw createOwnerError(
-      TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
-    );
-  }
-
-  return normalized;
-}
-
-function normalizeEmail(value: unknown): string {
-  const normalized = normalizeRequiredString(value, MAX_EMAIL_LENGTH).toLowerCase();
-
-  if (!isEmail(normalized)) {
     throw createOwnerError(
       TenantProvisioningErrorCode.OWNER_INITIALIZATION_FAILED,
     );
