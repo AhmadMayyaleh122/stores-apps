@@ -14,6 +14,12 @@ export enum StoreAuthErrorCode {
   TENANT_IDENTITY_INVALID = 'STORE_AUTH_TENANT_IDENTITY_INVALID',
   TENANT_ACCESS_FAILED = 'STORE_AUTH_TENANT_ACCESS_FAILED',
   TENANT_CLEANUP_FAILED = 'STORE_AUTH_TENANT_CLEANUP_FAILED',
+  OWNER_ACTIVATION_ISSUANCE_CONFLICT =
+    'STORE_AUTH_OWNER_ACTIVATION_ISSUANCE_CONFLICT',
+  OWNER_ACTIVATION_ISSUANCE_FAILED =
+    'STORE_AUTH_OWNER_ACTIVATION_ISSUANCE_FAILED',
+  OWNER_ACTIVATION_INVALID = 'STORE_AUTH_OWNER_ACTIVATION_INVALID',
+  OWNER_ACTIVATION_FAILED = 'STORE_AUTH_OWNER_ACTIVATION_FAILED',
 }
 
 export const STORE_AUTH_SAFE_MESSAGES = {
@@ -39,6 +45,14 @@ export const STORE_AUTH_SAFE_MESSAGES = {
     'Store tenant could not be accessed.',
   [StoreAuthErrorCode.TENANT_CLEANUP_FAILED]:
     'Store tenant connection could not be closed.',
+  [StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT]:
+    'Store owner is not eligible for activation issuance.',
+  [StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_FAILED]:
+    'Store owner activation could not be issued.',
+  [StoreAuthErrorCode.OWNER_ACTIVATION_INVALID]:
+    'Store owner activation is invalid or no longer available.',
+  [StoreAuthErrorCode.OWNER_ACTIVATION_FAILED]:
+    'Store owner activation could not be completed.',
 } as const satisfies Record<StoreAuthErrorCode, string>;
 
 export class StoreAuthError extends Error {

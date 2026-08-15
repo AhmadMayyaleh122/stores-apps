@@ -8,6 +8,7 @@ import { ActivationTokenService } from './services/activation-token.service';
 import { PasswordHasherService } from './services/password-hasher.service';
 import { PasswordPolicyService } from './services/password-policy.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
+import { StoreOwnerActivationService } from './services/store-owner-activation.service';
 import { StoreTenantAccessService } from './services/store-tenant-access.service';
 
 @Module({
@@ -17,6 +18,7 @@ import { StoreTenantAccessService } from './services/store-tenant-access.service
     PasswordHasherService,
     ActivationTokenService,
     StoreOwnerActivationConfigService,
+    StoreOwnerActivationService,
     TenantProvisioningConfigService,
     TenantCredentialEncryptionService,
     StoreTenantAccessService,
@@ -26,6 +28,7 @@ import { StoreTenantAccessService } from './services/store-tenant-access.service
     PasswordHasherService,
     ActivationTokenService,
     StoreOwnerActivationConfigService,
+    StoreOwnerActivationService,
     StoreTenantAccessService,
   ],
 })

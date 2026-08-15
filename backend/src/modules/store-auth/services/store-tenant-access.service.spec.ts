@@ -16,9 +16,13 @@ import {
 import { StoreTenantAccessService } from './store-tenant-access.service';
 
 jest.mock('@prisma/adapter-pg', () => ({ PrismaPg: jest.fn() }));
-jest.mock('../../../../generated/tenant-prisma/client', () => ({
-  PrismaClient: jest.fn(),
-}));
+jest.mock('../../../../generated/tenant-prisma/client', () => {
+  const actual = jest.requireActual(
+    '../../../../generated/tenant-prisma/client',
+  );
+
+  return { ...actual, PrismaClient: jest.fn() };
+});
 
 describe('StoreTenantAccessService', () => {
   const storeId = '12345678-1234-4234-8123-456789012345';
@@ -452,9 +456,18 @@ describe('StoreTenantAccessService', () => {
           'tenantAccess',
         ]);
         expect(context.storeId).toBe(storeId);
-        expect(context.tenantAccess).toEqual({
+        expect(context.tenantAccess).toMatchObject({
           kind: 'STORE_AUTH_TENANT_ACCESS',
+          checkOwnerActivationEligibility: expect.any(Function),
+          issueOwnerActivation: expect.any(Function),
+          activateOwner: expect.any(Function),
         });
+        expect(Object.keys(context.tenantAccess).sort()).toEqual([
+          'activateOwner',
+          'checkOwnerActivationEligibility',
+          'issueOwnerActivation',
+          'kind',
+        ]);
         expect(Object.isFrozen(context.tenantAccess)).toBe(true);
         expect(Object.getPrototypeOf(context.tenantAccess)).toBeNull();
         expect(context).not.toHaveProperty('tenantDatabaseUrl');

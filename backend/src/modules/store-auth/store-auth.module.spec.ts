@@ -9,6 +9,7 @@ import { ActivationTokenService } from './services/activation-token.service';
 import { PasswordHasherService } from './services/password-hasher.service';
 import { PasswordPolicyService } from './services/password-policy.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
+import { StoreOwnerActivationService } from './services/store-owner-activation.service';
 import { StoreTenantAccessService } from './services/store-tenant-access.service';
 import { StoreAuthModule } from './store-auth.module';
 
@@ -18,6 +19,7 @@ describe('StoreAuthModule', () => {
     PasswordHasherService,
     ActivationTokenService,
     StoreOwnerActivationConfigService,
+    StoreOwnerActivationService,
     StoreTenantAccessService,
   ];
 
@@ -50,6 +52,7 @@ describe('StoreAuthModule', () => {
       PasswordHasherService,
       ActivationTokenService,
       StoreOwnerActivationConfigService,
+      StoreOwnerActivationService,
       TenantProvisioningConfigService,
       TenantCredentialEncryptionService,
       StoreTenantAccessService,
@@ -68,6 +71,9 @@ describe('StoreAuthModule', () => {
 
       expect(moduleRef.get(StoreTenantAccessService)).toBeInstanceOf(
         StoreTenantAccessService,
+      );
+      expect(moduleRef.get(StoreOwnerActivationService)).toBeInstanceOf(
+        StoreOwnerActivationService,
       );
       await moduleRef.close();
     } finally {
