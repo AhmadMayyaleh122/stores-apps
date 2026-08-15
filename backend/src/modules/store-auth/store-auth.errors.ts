@@ -33,6 +33,7 @@ export enum StoreAuthErrorCode {
   AUTH_SESSION_CREATION_FAILED = 'STORE_AUTH_AUTH_SESSION_CREATION_FAILED',
   AUTH_REFRESH_INVALID = 'STORE_AUTH_AUTH_REFRESH_INVALID',
   AUTH_REFRESH_FAILED = 'STORE_AUTH_AUTH_REFRESH_FAILED',
+  AUTH_LOGOUT_FAILED = 'STORE_AUTH_AUTH_LOGOUT_FAILED',
 }
 
 export const STORE_AUTH_SAFE_MESSAGES = {
@@ -88,6 +89,8 @@ export const STORE_AUTH_SAFE_MESSAGES = {
     'Store refresh authentication is invalid or expired.',
   [StoreAuthErrorCode.AUTH_REFRESH_FAILED]:
     'Store authentication could not be refreshed.',
+  [StoreAuthErrorCode.AUTH_LOGOUT_FAILED]:
+    'Store authentication session could not be revoked.',
 } as const satisfies Record<StoreAuthErrorCode, string>;
 
 export class StoreAuthError extends Error {

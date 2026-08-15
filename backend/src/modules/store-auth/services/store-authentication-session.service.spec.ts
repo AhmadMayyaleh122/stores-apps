@@ -49,6 +49,7 @@ describe('StoreAuthenticationSessionService', () => {
       activateOwner: jest.fn(),
       createOwnerRefreshSession,
       rotateOwnerRefreshSession: jest.fn(),
+      revokeOwnerRefreshSession: jest.fn(),
     });
     withResolvedTenant = jest.fn(async (_slug, operation) =>
       operation({ storeId, tenantAccess }),

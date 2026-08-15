@@ -207,6 +207,7 @@ interface TenantStoreAuthTransactionBoundary {
         employeeId: string;
         refreshTokenHash: Buffer;
         revokedAt: null;
+        issuedAt?: { lte: Date };
         expiresAt?: { gt: Date };
       };
       data: {
@@ -292,6 +293,9 @@ export interface StoreAuthTenantAccess {
     input: RotateOwnerRefreshSessionInput,
     issueAccessToken: RotatedOwnerAccessTokenIssuer,
   ): Promise<RotateOwnerRefreshSessionOutcome>;
+  revokeOwnerRefreshSession(
+    input: RevokeOwnerRefreshSessionInput,
+  ): Promise<RevokeOwnerRefreshSessionOutcome>;
 }
 
 export interface FindOwnerLoginCredentialInput {
@@ -367,6 +371,14 @@ export type RotateOwnerRefreshSessionOutcome =
   | 'INVALID_REFRESH'
   | 'INVALID_REFRESH_REVOKED'
   | 'REFRESH_TOKEN_HASH_COLLISION';
+
+export interface RevokeOwnerRefreshSessionInput {
+  readonly refreshTokenHash: Buffer;
+}
+
+export type RevokeOwnerRefreshSessionOutcome =
+  | 'REVOKED'
+  | 'NO_REVOCABLE_SESSION';
 
 export interface OwnerActivationIssuedOutcome {
   readonly issuedAt: Date;
@@ -728,8 +740,92 @@ function createStoreAuthTenantAccess(
 
         return outcome;
       },
+      revokeOwnerRefreshSession: async (
+        input: RevokeOwnerRefreshSessionInput,
+      ) => {
+        const outcome = await revokeOwnerRefreshSessionMutation(
+          internalClient,
+          storeId,
+          input,
+        );
+
+        if (outcome === 'REVOKED') {
+          markCommittedSecurityMutation();
+        }
+
+        return outcome;
+      },
     }),
   ) as StoreAuthTenantAccess;
+}
+
+async function revokeOwnerRefreshSessionMutation(
+  tenantPrisma: TenantStoreAuthPrismaClientBoundary,
+  storeId: string,
+  input: RevokeOwnerRefreshSessionInput,
+): Promise<RevokeOwnerRefreshSessionOutcome> {
+  let refreshTokenHash: Buffer | undefined;
+
+  try {
+    refreshTokenHash = copyLogoutRefreshTokenHash(input.refreshTokenHash);
+    const usableRefreshTokenHash = refreshTokenHash;
+
+    return await tenantPrisma.$transaction(async (transaction) => {
+      const lockedSessions = await transaction.$queryRaw<
+        LockedRefreshSessionRow[]
+      >`
+        SELECT "id", "employee_id" AS "employeeId"
+        FROM "employee_refresh_sessions"
+        WHERE "refresh_token_hash" = ${usableRefreshTokenHash}
+        FOR UPDATE
+      `;
+
+      if (lockedSessions.length !== 1) {
+        return 'NO_REVOCABLE_SESSION';
+      }
+
+      let sessionId: string;
+      let ownerId: string;
+
+      try {
+        sessionId = normalizeCanonicalUuid(lockedSessions[0].id);
+        ownerId = normalizeCanonicalUuid(lockedSessions[0].employeeId);
+      } catch {
+        return 'NO_REVOCABLE_SESSION';
+      }
+
+      await requireTransactionTenantIdentity(
+        transaction,
+        storeId,
+        StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+      );
+      const logoutTime = await readAuthoritativeLogoutTime(transaction);
+      const revoked = await transaction.employeeRefreshSession.updateMany({
+        where: {
+          id: sessionId,
+          employeeId: ownerId,
+          refreshTokenHash: usableRefreshTokenHash,
+          revokedAt: null,
+          issuedAt: { lte: logoutTime },
+          expiresAt: { gt: logoutTime },
+        },
+        data: { revokedAt: logoutTime },
+      });
+
+      return revoked.count === 1 ? 'REVOKED' : 'NO_REVOCABLE_SESSION';
+    });
+  } catch (error) {
+    if (
+      error instanceof StoreAuthError &&
+      error.code === StoreAuthErrorCode.AUTH_LOGOUT_FAILED
+    ) {
+      throw createStoreAuthError(error.code);
+    }
+
+    throw logoutFailed();
+  } finally {
+    refreshTokenHash?.fill(0);
+  }
 }
 
 async function rotateOwnerRefreshSessionMutation(
@@ -1402,7 +1498,8 @@ async function requireTransactionTenantIdentity(
     | StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT
     | StoreAuthErrorCode.OWNER_ACTIVATION_INVALID
     | StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID
-    | StoreAuthErrorCode.AUTH_REFRESH_INVALID,
+    | StoreAuthErrorCode.AUTH_REFRESH_INVALID
+    | StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
 ): Promise<void> {
   const identity = await transaction.tenantIdentity.findUnique({
     where: { id: 1 },
@@ -1455,6 +1552,14 @@ function copyTokenHash(
 function copyRefreshTokenHash(value: unknown): Buffer {
   if (!Buffer.isBuffer(value) || value.length !== 32) {
     throw sessionCreationFailed();
+  }
+
+  return Buffer.from(value);
+}
+
+function copyLogoutRefreshTokenHash(value: unknown): Buffer {
+  if (!Buffer.isBuffer(value) || value.length !== 32) {
+    throw logoutFailed();
   }
 
   return Buffer.from(value);
@@ -1524,6 +1629,29 @@ async function readAuthoritativeRefreshTime(
     authoritativeTime.getTime() % 1_000 !== 0
   ) {
     throw refreshFailed();
+  }
+
+  return new Date(authoritativeTime.getTime());
+}
+
+async function readAuthoritativeLogoutTime(
+  client: Pick<TenantStoreAuthTransactionBoundary, '$queryRaw'>,
+): Promise<Date> {
+  const rows = await client.$queryRaw<DatabaseClockRow[]>`
+    SELECT date_trunc(
+      'seconds',
+      clock_timestamp() AT TIME ZONE 'UTC'
+    ) AS "authoritativeTime"
+  `;
+  const authoritativeTime = rows[0]?.authoritativeTime;
+
+  if (
+    rows.length !== 1 ||
+    !(authoritativeTime instanceof Date) ||
+    !Number.isFinite(authoritativeTime.getTime()) ||
+    authoritativeTime.getTime() % 1_000 !== 0
+  ) {
+    throw logoutFailed();
   }
 
   return new Date(authoritativeTime.getTime());
@@ -1753,6 +1881,10 @@ function refreshInvalid(): StoreAuthError {
 
 function refreshFailed(): StoreAuthError {
   return createStoreAuthError(StoreAuthErrorCode.AUTH_REFRESH_FAILED);
+}
+
+function logoutFailed(): StoreAuthError {
+  return createStoreAuthError(StoreAuthErrorCode.AUTH_LOGOUT_FAILED);
 }
 
 function requireCanonicalStoreSlug(value: unknown): string {

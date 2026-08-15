@@ -1074,6 +1074,227 @@ describe('StoreTenantAccessService activation transactions', () => {
     });
   });
 
+  describe('single refresh-session revocation transaction', () => {
+    const logoutTime = new Date('2026-08-10T18:00:00.000Z');
+
+    beforeEach(() => {
+      harness.state.owner.status = EmployeeStatus.ACTIVE;
+      harness.state.credential = passwordHash;
+      harness.state.sessions.push(refreshSessionRecord(tokenHash));
+      harness.hooks.transactionClockTime = logoutTime;
+    });
+
+    it('locks by digest, revalidates tenant identity, and revokes at database time', async () => {
+      await expect(revokeRefreshSession(tokenHash)).resolves.toBe(
+        'REVOKED',
+      );
+
+      expect(harness.state.sessions[0]).toMatchObject({
+        refreshTokenHash: tokenHash,
+        revokedAt: logoutTime,
+      });
+      expect(harness.events).toEqual([
+        'lock-refresh-session',
+        'verify-identity',
+        'read-clock',
+        'revoke-refresh-session',
+      ]);
+      expect(harness.lockQueryText).toContain('FOR UPDATE');
+      expect(harness.lockQueryValues).toEqual([tokenHash]);
+      expect(harness.events).not.toContain('lock-owner');
+      expect(harness.events).not.toContain('read-owner');
+    });
+
+    it.each([EmployeeStatus.INACTIVE, EmployeeStatus.SUSPENDED])(
+      'allows owner status %s to revoke its current session',
+      async (status) => {
+        harness.state.owner.status = status;
+
+        await expect(revokeRefreshSession(tokenHash)).resolves.toBe(
+          'REVOKED',
+        );
+        expect(harness.state.sessions[0].revokedAt).toEqual(logoutTime);
+        expect(harness.events).not.toContain('read-owner');
+      },
+    );
+
+    it.each([
+      ['already revoked', () => {
+        harness.state.sessions[0].revokedAt = new Date(
+          logoutTime.getTime() - 1_000,
+        );
+      }],
+      ['expired', () => {
+        harness.state.sessions[0].expiresAt = new Date(
+          logoutTime.getTime() - 1_000,
+        );
+      }],
+      ['expiry equality', () => {
+        harness.state.sessions[0].expiresAt = new Date(logoutTime);
+      }],
+      ['future-issued', () => {
+        harness.state.sessions[0].issuedAt = new Date(
+          logoutTime.getTime() + 1_000,
+        );
+      }],
+    ])('treats a %s session as a stable no-op', async (_label, mutate) => {
+      mutate();
+      const before = cloneState(harness.state).sessions[0];
+
+      await expect(revokeRefreshSession(tokenHash)).resolves.toBe(
+        'NO_REVOCABLE_SESSION',
+      );
+      expect(harness.state.sessions[0]).toEqual(before);
+    });
+
+    it('treats unknown and old rotated digests as stable no-ops', async () => {
+      await expect(
+        revokeRefreshSession(Buffer.alloc(32, 88)),
+      ).resolves.toBe('NO_REVOCABLE_SESSION');
+
+      await rotateRefreshSession(tokenHash, secondTokenHash);
+      await expect(revokeRefreshSession(tokenHash)).resolves.toBe(
+        'NO_REVOCABLE_SESSION',
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(
+        secondTokenHash,
+      );
+      expect(harness.state.sessions[0].revokedAt).toBeNull();
+    });
+
+    it('revokes only the selected device session', async () => {
+      const phoneBHash = Buffer.alloc(32, 41);
+      const phoneB = refreshSessionRecord(phoneBHash);
+      harness.state.sessions.push(phoneB);
+
+      await revokeRefreshSession(tokenHash);
+
+      expect(harness.state.sessions[0].revokedAt).toEqual(logoutTime);
+      expect(harness.state.sessions[1]).toEqual(phoneB);
+
+      await expect(
+        rotateRefreshSession(phoneBHash, secondTokenHash),
+      ).resolves.toMatchObject({ accessToken: 'signed.access.token' });
+      expect(harness.state.sessions[0].revokedAt).toEqual(logoutTime);
+    });
+
+    it('makes a revoked session unusable for refresh without changing its digest', async () => {
+      await revokeRefreshSession(tokenHash);
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+      ).resolves.toBe('INVALID_REFRESH');
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+      expect(harness.state.sessions[0].revokedAt).toEqual(logoutTime);
+    });
+
+    it('serializes concurrent logout of the same digest idempotently', async () => {
+      const outcomes = await Promise.all([
+        revokeRefreshSession(tokenHash),
+        revokeRefreshSession(tokenHash),
+      ]);
+
+      expect(outcomes.sort()).toEqual([
+        'NO_REVOCABLE_SESSION',
+        'REVOKED',
+      ]);
+      expect(harness.state.sessions[0].revokedAt).toEqual(logoutTime);
+    });
+
+    it('preserves refresh-wins semantics for the old presented digest', async () => {
+      const [refreshOutcome, logoutOutcome] = await Promise.all([
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        revokeRefreshSession(tokenHash),
+      ]);
+
+      expect(refreshOutcome).toMatchObject({
+        accessToken: 'signed.access.token',
+      });
+      expect(logoutOutcome).toBe('NO_REVOCABLE_SESSION');
+      expect(harness.state.sessions[0]).toMatchObject({
+        refreshTokenHash: secondTokenHash,
+        revokedAt: null,
+      });
+    });
+
+    it('preserves logout-wins semantics against refresh', async () => {
+      const [logoutOutcome, refreshOutcome] = await Promise.all([
+        revokeRefreshSession(tokenHash),
+        rotateRefreshSession(tokenHash, secondTokenHash),
+      ]);
+
+      expect(logoutOutcome).toBe('REVOKED');
+      expect(refreshOutcome).toBe('INVALID_REFRESH');
+      expect(harness.state.sessions[0]).toMatchObject({
+        refreshTokenHash: tokenHash,
+        revokedAt: logoutTime,
+      });
+    });
+
+    it('blocks transaction-time tenant identity mismatch before reading database time', async () => {
+      harness.state.identityStoreId = otherStoreId;
+
+      await expectCode(
+        revokeRefreshSession(tokenHash),
+        StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+      );
+      expect(harness.state.sessions[0].revokedAt).toBeNull();
+      expect(harness.events).not.toContain('read-clock');
+    });
+
+    it('rolls back update and commit failures and sanitizes them', async () => {
+      harness.hooks.sessionUpdateError = new Error('database detail');
+      await expectCode(
+        revokeRefreshSession(tokenHash),
+        StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+      );
+      expect(harness.state.sessions[0].revokedAt).toBeNull();
+
+      delete harness.hooks.sessionUpdateError;
+      harness.hooks.transactionCommitError = new Error('commit detail');
+      await expectCode(
+        revokeRefreshSession(tokenHash),
+        StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+      );
+      expect(harness.state.sessions[0].revokedAt).toBeNull();
+    });
+
+    it('fails closed on invalid digest and invalid database timestamp precision', async () => {
+      await expectCode(
+        revokeRefreshSession(Buffer.alloc(31)),
+        StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+      );
+      expect(harness.events).toEqual([]);
+
+      harness.hooks.transactionClockTime = new Date(
+        logoutTime.getTime() + 1,
+      );
+      await expectCode(
+        revokeRefreshSession(tokenHash),
+        StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+      );
+      expect(harness.state.sessions[0].revokedAt).toBeNull();
+    });
+
+    it('keeps committed revocation successful when disconnect fails', async () => {
+      harness.disconnect.mockRejectedValue(new Error('cleanup detail'));
+
+      await expect(revokeRefreshSession(tokenHash)).resolves.toBe(
+        'REVOKED',
+      );
+      expect(harness.state.sessions[0].revokedAt).toEqual(logoutTime);
+    });
+
+    it('surfaces cleanup failure when no revocation committed', async () => {
+      harness.disconnect.mockRejectedValue(new Error('cleanup detail'));
+
+      await expectCode(
+        revokeRefreshSession(Buffer.alloc(32, 88)),
+        StoreAuthErrorCode.TENANT_CLEANUP_FAILED,
+      );
+    });
+  });
+
   async function issue(hash: Buffer) {
     const outcome = await harness.service.withResolvedTenant(
       'demo-store',
@@ -1140,6 +1361,16 @@ describe('StoreTenantAccessService activation transactions', () => {
           },
           issuer,
         ),
+    );
+  }
+
+  async function revokeRefreshSession(refreshTokenHash: Buffer) {
+    return harness.service.withResolvedTenant(
+      'demo-store',
+      ({ tenantAccess }) =>
+        tenantAccess.revokeOwnerRefreshSession({
+          refreshTokenHash: Buffer.from(refreshTokenHash),
+        }),
     );
   }
 
@@ -1287,7 +1518,9 @@ describe('StoreTenantAccessService activation transactions', () => {
           if (queryText.includes('employee_refresh_sessions')) {
             events.push('lock-refresh-session');
             lockQueryText = queryText;
-            lockQueryValues = values;
+            lockQueryValues = values.map((value) =>
+              Buffer.isBuffer(value) ? Buffer.from(value) : value,
+            );
             const presentedHash = values[0];
             const session = Buffer.isBuffer(presentedHash)
               ? draft.sessions.find((candidate) =>
@@ -1530,6 +1763,9 @@ describe('StoreTenantAccessService activation transactions', () => {
                 candidate.employeeId === where.employeeId &&
                 candidate.refreshTokenHash.equals(where.refreshTokenHash) &&
                 candidate.revokedAt === null &&
+                (where.issuedAt === undefined ||
+                  candidate.issuedAt.getTime() <=
+                    where.issuedAt.lte.getTime()) &&
                 (where.expiresAt === undefined ||
                   candidate.expiresAt.getTime() >
                     where.expiresAt.gt.getTime()),

@@ -678,6 +678,7 @@ describe('StoreTenantAccessService', () => {
           activateOwner: expect.any(Function),
           createOwnerRefreshSession: expect.any(Function),
           rotateOwnerRefreshSession: expect.any(Function),
+          revokeOwnerRefreshSession: expect.any(Function),
         });
         expect(Object.keys(context.tenantAccess).sort()).toEqual([
           'activateOwner',
@@ -686,6 +687,7 @@ describe('StoreTenantAccessService', () => {
           'findOwnerLoginCredential',
           'issueOwnerActivation',
           'kind',
+          'revokeOwnerRefreshSession',
           'rotateOwnerRefreshSession',
         ]);
         expect(Object.isFrozen(context.tenantAccess)).toBe(true);
