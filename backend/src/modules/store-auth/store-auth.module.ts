@@ -16,9 +16,11 @@ import { StoreOwnerActivationConfigService } from './services/store-owner-activa
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
 import { StoreOwnerLoginService } from './services/store-owner-login.service';
 import { StoreTenantAccessService } from './services/store-tenant-access.service';
+import { StoreAuthController } from './store-auth.controller';
 
 @Module({
   imports: [ConfigModule, DatabaseModule, JwtModule.register({})],
+  controllers: [StoreAuthController],
   providers: [
     PasswordPolicyService,
     PasswordHasherService,

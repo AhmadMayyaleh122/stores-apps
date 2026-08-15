@@ -17,6 +17,7 @@ import { StoreOwnerActivationConfigService } from './services/store-owner-activa
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
 import { StoreOwnerLoginService } from './services/store-owner-login.service';
 import { StoreTenantAccessService } from './services/store-tenant-access.service';
+import { StoreAuthController } from './store-auth.controller';
 import { StoreAuthModule } from './store-auth.module';
 
 describe('StoreAuthModule', () => {
@@ -45,7 +46,7 @@ describe('StoreAuthModule', () => {
     expect(imports).toHaveLength(3);
     expect(imports.slice(0, 2)).toEqual([ConfigModule, DatabaseModule]);
     expect(imports[2]).toMatchObject({ module: JwtModule });
-    expect(controllers ?? []).toEqual([]);
+    expect(controllers).toEqual([StoreAuthController]);
   });
 
   it('provides the access dependencies and exports only Store Auth services', () => {
@@ -99,6 +100,9 @@ describe('StoreAuthModule', () => {
       );
       expect(moduleRef.get(StoreAuthenticationSessionService)).toBeInstanceOf(
         StoreAuthenticationSessionService,
+      );
+      expect(moduleRef.get(StoreAuthController)).toBeInstanceOf(
+        StoreAuthController,
       );
       await moduleRef.close();
     } finally {
