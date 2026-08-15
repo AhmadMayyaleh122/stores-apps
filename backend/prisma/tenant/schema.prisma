@@ -48,6 +48,7 @@ model Employee {
   role             Role                      @relation(fields: [roleId], references: [id], onDelete: Restrict, map: "employees_role_id_fkey")
   credential       EmployeeCredential?
   activationTokens EmployeeActivationToken[]
+  refreshSessions  EmployeeRefreshSession[]
 
   @@index([roleId], map: "employees_role_id_idx")
   @@index([status], map: "employees_status_idx")
@@ -78,4 +79,18 @@ model EmployeeActivationToken {
   @@index([employeeId], map: "employee_activation_tokens_employee_id_idx")
   @@index([expiresAt], map: "employee_activation_tokens_expires_at_idx")
   @@map("employee_activation_tokens")
+}
+
+model EmployeeRefreshSession {
+  id               String    @id(map: "employee_refresh_sessions_pkey") @default(uuid()) @db.Uuid
+  employeeId       String    @map("employee_id") @db.Uuid
+  refreshTokenHash Bytes     @unique(map: "employee_refresh_sessions_refresh_token_hash_key") @map("refresh_token_hash") @db.ByteA
+  issuedAt         DateTime  @default(now()) @map("issued_at")
+  expiresAt        DateTime  @map("expires_at")
+  revokedAt        DateTime? @map("revoked_at")
+  employee         Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade, map: "employee_refresh_sessions_employee_id_fkey")
+
+  @@index([employeeId], map: "employee_refresh_sessions_employee_id_idx")
+  @@index([expiresAt], map: "employee_refresh_sessions_expires_at_idx")
+  @@map("employee_refresh_sessions")
 }

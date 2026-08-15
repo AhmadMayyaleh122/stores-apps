@@ -4,6 +4,7 @@ import { StoreAuthErrorCode } from '../store-auth.errors';
 import {
   PasswordHasherService,
   STORE_PASSWORD_ARGON2_OPTIONS,
+  STORE_PASSWORD_DUMMY_HASH,
 } from './password-hasher.service';
 import { PasswordPolicyService } from './password-policy.service';
 
@@ -44,6 +45,35 @@ describe('PasswordHasherService', () => {
     await expect(service.verify('not-an-argon2-hash', password)).resolves.toBe(
       false,
     );
+  });
+
+  it('uses the centralized Argon2id dummy hash for a missing credential', async () => {
+    const verify = jest.spyOn(argon2, 'verify');
+
+    await expect(service.verifyWithDummy(null, password)).resolves.toBe(false);
+    expect(verify).toHaveBeenCalledWith(STORE_PASSWORD_DUMMY_HASH, password);
+    expect(STORE_PASSWORD_DUMMY_HASH).toMatch(
+      /^\$argon2id\$v=19\$m=65536,t=3,p=1\$/,
+    );
+  });
+
+  it('uses the dummy verification path for an unsupported stored hash', async () => {
+    const verify = jest.spyOn(argon2, 'verify');
+
+    await expect(
+      service.verifyWithDummy('not-an-argon2id-hash', password),
+    ).resolves.toBe(false);
+    expect(verify).toHaveBeenCalledWith(STORE_PASSWORD_DUMMY_HASH, password);
+  });
+
+  it('verifies a supported stored hash without substituting the dummy', async () => {
+    const passwordHash = await service.hash(password);
+    const verify = jest.spyOn(argon2, 'verify');
+
+    await expect(
+      service.verifyWithDummy(passwordHash, password),
+    ).resolves.toBe(true);
+    expect(verify).toHaveBeenCalledWith(passwordHash, password);
   });
 
   it('uses independent library-generated salts for the same password', async () => {

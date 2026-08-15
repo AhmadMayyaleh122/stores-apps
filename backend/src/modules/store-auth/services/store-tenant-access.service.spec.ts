@@ -1,7 +1,10 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { TenantProvisioningStatus } from '../../../../generated/prisma/client';
-import { PrismaClient as TenantPrismaClient } from '../../../../generated/tenant-prisma/client';
+import {
+  EmployeeStatus,
+  PrismaClient as TenantPrismaClient,
+} from '../../../../generated/tenant-prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { TenantCredentialEncryptionService } from '../../tenant-provisioning/services/tenant-credential-encryption.service';
 import {
@@ -33,6 +36,11 @@ describe('StoreTenantAccessService', () => {
   const databasePassword = 'owner@access:/% password';
   const encryptionKey = Buffer.alloc(32, 29);
   const storeSlug = 'demo-store';
+  const ownerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const ownerRoleId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const ownerEmail = 'owner@example.com';
+  const ownerPasswordHash =
+    '$argon2id$v=19$m=65536,t=3,p=1$kvWU+X2SSp6Z5790fw8zug$npylD8PtUEAIn7XhZURLQTnScHcPENwRkCf3WTqy1FI';
   let service: StoreTenantAccessService;
   let masterFindUnique: jest.Mock;
   let getTenantAccessConfiguration: jest.Mock;
@@ -48,6 +56,7 @@ describe('StoreTenantAccessService', () => {
     employee: { findUnique: jest.Mock };
     $connect: jest.Mock;
     $disconnect: jest.Mock;
+    $transaction: jest.Mock;
     $queryRaw: jest.Mock;
     $queryRawUnsafe: jest.Mock;
     $executeRaw: jest.Mock;
@@ -90,6 +99,7 @@ describe('StoreTenantAccessService', () => {
       employee: { findUnique: jest.fn() },
       $connect: jest.fn(),
       $disconnect: disconnect,
+      $transaction: jest.fn(),
       $queryRaw: jest.fn(),
       $queryRawUnsafe: jest.fn(),
       $executeRaw: jest.fn(),
@@ -116,6 +126,210 @@ describe('StoreTenantAccessService', () => {
       } as unknown as TenantProvisioningConfigService,
       credentialEncryptionService,
     );
+  });
+
+  describe('Store Owner login credential boundary', () => {
+    it('returns only a frozen credential candidate for the exact active owner', async () => {
+      tenantClient.employee.findUnique.mockResolvedValue(buildLoginOwner());
+
+      const result = await service.withResolvedTenant(
+        storeSlug,
+        ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+      );
+
+      expect(result).toEqual({
+        ownerId,
+        email: ownerEmail,
+        passwordHash: ownerPasswordHash,
+      });
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(Object.keys(result as object).sort()).toEqual([
+        'email',
+        'ownerId',
+        'passwordHash',
+      ]);
+      expect(tenantClient.employee.findUnique).toHaveBeenCalledWith({
+        where: { email: ownerEmail },
+        select: {
+          id: true,
+          email: true,
+          roleId: true,
+          status: true,
+          isStoreOwner: true,
+          masterStoreId: true,
+          role: {
+            select: {
+              id: true,
+              key: true,
+              name: true,
+              isSystem: true,
+            },
+          },
+          credential: {
+            select: {
+              employeeId: true,
+              passwordHash: true,
+            },
+          },
+        },
+      });
+      expect(tenantClient.$transaction).not.toHaveBeenCalled();
+      expect(tenantClient.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('canonicalizes an internal email before the unique lookup', async () => {
+      tenantClient.employee.findUnique.mockResolvedValue(buildLoginOwner());
+
+      await service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+        tenantAccess.findOwnerLoginCredential({
+          email: '  OWNER@Example.COM  ',
+        }),
+      );
+
+      expect(tenantClient.employee.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { email: ownerEmail } }),
+      );
+    });
+
+    it.each([
+      EmployeeStatus.PENDING_ACTIVATION,
+      EmployeeStatus.INACTIVE,
+      EmployeeStatus.SUSPENDED,
+    ])('returns no credential candidate for owner status %s', async (status) => {
+      tenantClient.employee.findUnique.mockResolvedValue(
+        buildLoginOwner({ status }),
+      );
+
+      await expect(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('returns no credential candidate for an unknown email', async () => {
+      tenantClient.employee.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('returns no credential candidate when the credential is missing', async () => {
+      tenantClient.employee.findUnique.mockResolvedValue(
+        buildLoginOwner({ credential: null }),
+      );
+
+      await expect(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it.each([
+      ['owner marker', { isStoreOwner: false }],
+      ['tenant relationship', { masterStoreId: otherStoreId }],
+      ['role relationship', { roleId: otherStoreId }],
+      ['role key', { role: { id: ownerRoleId, key: 'ADMIN', name: 'Owner', isSystem: true } }],
+      ['role name', { role: { id: ownerRoleId, key: 'OWNER', name: 'Store Owner', isSystem: true } }],
+      ['system role', { role: { id: ownerRoleId, key: 'OWNER', name: 'Owner', isSystem: false } }],
+      [
+        'credential relationship',
+        {
+          credential: {
+            employeeId: otherStoreId,
+            passwordHash: ownerPasswordHash,
+          },
+        },
+      ],
+    ])('returns no credential candidate for an invalid %s', async (_label, change) => {
+      tenantClient.employee.findUnique.mockResolvedValue(
+        buildLoginOwner(change),
+      );
+
+      await expect(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('passes a malformed stored hash only to the safe verifier boundary', async () => {
+      tenantClient.employee.findUnique.mockResolvedValue(
+        buildLoginOwner({
+          credential: {
+            employeeId: ownerId,
+            passwordHash: 'malformed-stored-hash',
+          },
+        }),
+      );
+
+      await expect(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+      ).resolves.toEqual({
+        ownerId,
+        email: ownerEmail,
+        passwordHash: 'malformed-stored-hash',
+      });
+    });
+
+    it('rejects malformed email without querying an employee', async () => {
+      await expectCode(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: 'not-an-email' }),
+        ),
+        StoreAuthErrorCode.INVALID_STORE_CREDENTIALS,
+      );
+      expect(tenantClient.employee.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('sanitizes credential query failures and disconnects', async () => {
+      tenantClient.employee.findUnique.mockRejectedValue(
+        new Error(`query detail ${ownerEmail} ${ownerPasswordHash}`),
+      );
+
+      await expectSafeFailure(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+        StoreAuthErrorCode.TENANT_ACCESS_FAILED,
+        [ownerEmail, ownerPasswordHash, 'query detail'],
+      );
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not query credentials when outer tenant identity mismatches', async () => {
+      tenantIdentityFindUnique.mockResolvedValue({
+        id: 1,
+        masterStoreId: otherStoreId,
+      });
+
+      await expectCode(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+        StoreAuthErrorCode.TENANT_IDENTITY_INVALID,
+      );
+      expect(tenantClient.employee.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('surfaces cleanup failure after a successful read', async () => {
+      tenantClient.employee.findUnique.mockResolvedValue(buildLoginOwner());
+      disconnect.mockRejectedValue(new Error('cleanup detail'));
+
+      await expectCode(
+        service.withResolvedTenant(storeSlug, ({ tenantAccess }) =>
+          tenantAccess.findOwnerLoginCredential({ email: ownerEmail }),
+        ),
+        StoreAuthErrorCode.TENANT_CLEANUP_FAILED,
+      );
+    });
   });
 
   afterEach(() => {
@@ -458,15 +672,23 @@ describe('StoreTenantAccessService', () => {
         expect(context.storeId).toBe(storeId);
         expect(context.tenantAccess).toMatchObject({
           kind: 'STORE_AUTH_TENANT_ACCESS',
+          findOwnerLoginCredential: expect.any(Function),
           checkOwnerActivationEligibility: expect.any(Function),
           issueOwnerActivation: expect.any(Function),
           activateOwner: expect.any(Function),
+          createOwnerRefreshSession: expect.any(Function),
+          rotateOwnerRefreshSession: expect.any(Function),
+          revokeOwnerRefreshSession: expect.any(Function),
         });
         expect(Object.keys(context.tenantAccess).sort()).toEqual([
           'activateOwner',
           'checkOwnerActivationEligibility',
+          'createOwnerRefreshSession',
+          'findOwnerLoginCredential',
           'issueOwnerActivation',
           'kind',
+          'revokeOwnerRefreshSession',
+          'rotateOwnerRefreshSession',
         ]);
         expect(Object.isFrozen(context.tenantAccess)).toBe(true);
         expect(Object.getPrototypeOf(context.tenantAccess)).toBeNull();
@@ -671,6 +893,47 @@ describe('StoreTenantAccessService', () => {
         databasePasswordEncrypted: encryptedPassword,
         encryptionKeyVersion: 1,
       },
+    };
+  }
+
+  function buildLoginOwner(
+    overrides: Partial<{
+      id: string;
+      email: string;
+      roleId: string;
+      status: EmployeeStatus;
+      isStoreOwner: boolean;
+      masterStoreId: string;
+      role: {
+        id: string;
+        key: string;
+        name: string;
+        isSystem: boolean;
+      };
+      credential: {
+        employeeId: string;
+        passwordHash: string;
+      } | null;
+    }> = {},
+  ) {
+    return {
+      id: ownerId,
+      email: ownerEmail,
+      roleId: ownerRoleId,
+      status: EmployeeStatus.ACTIVE,
+      isStoreOwner: true,
+      masterStoreId: storeId,
+      role: {
+        id: ownerRoleId,
+        key: 'OWNER',
+        name: 'Owner',
+        isSystem: true,
+      },
+      credential: {
+        employeeId: ownerId,
+        passwordHash: ownerPasswordHash,
+      },
+      ...overrides,
     };
   }
 

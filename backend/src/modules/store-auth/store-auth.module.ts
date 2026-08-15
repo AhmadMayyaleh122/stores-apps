@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 
 import { DatabaseModule } from '../../database/database.module';
 import { TenantCredentialEncryptionService } from '../tenant-provisioning/services/tenant-credential-encryption.service';
@@ -7,18 +8,34 @@ import { TenantProvisioningConfigService } from '../tenant-provisioning/services
 import { ActivationTokenService } from './services/activation-token.service';
 import { PasswordHasherService } from './services/password-hasher.service';
 import { PasswordPolicyService } from './services/password-policy.service';
+import { RefreshTokenService } from './services/refresh-token.service';
+import { StoreAccessTokenService } from './services/store-access-token.service';
+import { StoreAuthenticationLogoutService } from './services/store-authentication-logout.service';
+import { StoreAuthenticationRefreshService } from './services/store-authentication-refresh.service';
+import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
+import { StoreAuthSessionConfigService } from './services/store-auth-session-config.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
+import { StoreOwnerLoginService } from './services/store-owner-login.service';
 import { StoreTenantAccessService } from './services/store-tenant-access.service';
+import { StoreAuthController } from './store-auth.controller';
 
 @Module({
-  imports: [ConfigModule, DatabaseModule],
+  imports: [ConfigModule, DatabaseModule, JwtModule.register({})],
+  controllers: [StoreAuthController],
   providers: [
     PasswordPolicyService,
     PasswordHasherService,
     ActivationTokenService,
     StoreOwnerActivationConfigService,
     StoreOwnerActivationService,
+    StoreOwnerLoginService,
+    StoreAuthSessionConfigService,
+    RefreshTokenService,
+    StoreAccessTokenService,
+    StoreAuthenticationSessionService,
+    StoreAuthenticationRefreshService,
+    StoreAuthenticationLogoutService,
     TenantProvisioningConfigService,
     TenantCredentialEncryptionService,
     StoreTenantAccessService,
@@ -29,6 +46,11 @@ import { StoreTenantAccessService } from './services/store-tenant-access.service
     ActivationTokenService,
     StoreOwnerActivationConfigService,
     StoreOwnerActivationService,
+    StoreOwnerLoginService,
+    StoreAccessTokenService,
+    StoreAuthenticationSessionService,
+    StoreAuthenticationRefreshService,
+    StoreAuthenticationLogoutService,
     StoreTenantAccessService,
   ],
 })

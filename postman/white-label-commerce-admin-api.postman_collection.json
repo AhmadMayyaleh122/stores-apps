@@ -118,6 +118,218 @@
       ]
     },
     {
+      "name": "Store Auth",
+      "item": [
+        {
+          "name": "Store Owner Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const responseJson = pm.response.json();",
+                  "const serialized = JSON.stringify(responseJson);",
+                  "",
+                  "pm.test('Response contains only the public authentication state', function () {",
+                  "  pm.expect(responseJson.success).to.eql(true);",
+                  "  pm.expect(responseJson).to.have.nested.property('data.accessToken');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.accessTokenExpiresAt');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.refreshToken');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.refreshTokenExpiresAt');",
+                  "  pm.expect(serialized).not.to.include('passwordHash');",
+                  "  pm.expect(serialized).not.to.include('refreshTokenHash');",
+                  "  pm.expect(serialized).not.to.include('databasePassword');",
+                  "});",
+                  "",
+                  "if (responseJson.data) {",
+                  "  pm.environment.set('storeAccessToken', responseJson.data.accessToken || '');",
+                  "  pm.environment.set('storeRefreshToken', responseJson.data.refreshToken || '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-store-slug",
+                "value": "{{storeSlug}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{storeOwnerEmail}}\",\n  \"password\": \"{{storeOwnerPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/store/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "store",
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Store Authentication",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const responseJson = pm.response.json();",
+                  "const serialized = JSON.stringify(responseJson);",
+                  "",
+                  "pm.test('Response contains only the public replacement authentication state', function () {",
+                  "  pm.expect(responseJson.success).to.eql(true);",
+                  "  pm.expect(responseJson).to.have.nested.property('data.accessToken');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.accessTokenExpiresAt');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.refreshToken');",
+                  "  pm.expect(responseJson).to.have.nested.property('data.refreshTokenExpiresAt');",
+                  "  pm.expect(serialized).not.to.include('sessionId');",
+                  "  pm.expect(serialized).not.to.include('ownerId');",
+                  "  pm.expect(serialized).not.to.include('refreshTokenHash');",
+                  "  pm.expect(serialized).not.to.include('databasePassword');",
+                  "});",
+                  "",
+                  "if (responseJson.data) {",
+                  "  pm.environment.set('storeAccessToken', responseJson.data.accessToken || '');",
+                  "  pm.environment.set('storeRefreshToken', responseJson.data.refreshToken || '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-store-slug",
+                "value": "{{storeSlug}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{storeRefreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/store/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "store",
+                "auth",
+                "refresh"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Logout Store Session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const responseJson = pm.response.json();",
+                  "const serialized = JSON.stringify(responseJson);",
+                  "",
+                  "pm.test('Response contains only the stable logout result', function () {",
+                  "  pm.expect(responseJson).to.eql({ success: true, message: 'Store logout successful', data: {} });",
+                  "  pm.expect(serialized).not.to.include('sessionId');",
+                  "  pm.expect(serialized).not.to.include('ownerId');",
+                  "  pm.expect(serialized).not.to.include('refreshToken');",
+                  "  pm.expect(serialized).not.to.include('refreshTokenHash');",
+                  "  pm.expect(serialized).not.to.include('revokedAt');",
+                  "  pm.expect(serialized).not.to.include('databasePassword');",
+                  "});",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "  pm.environment.set('storeAccessToken', '');",
+                  "  pm.environment.set('storeRefreshToken', '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-store-slug",
+                "value": "{{storeSlug}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{storeRefreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/store/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "store",
+                "auth",
+                "logout"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Admin Stores",
       "item": [
         {

@@ -1,5 +1,6 @@
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ConfigModule } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 
 import { DatabaseModule } from '../../database/database.module';
@@ -8,9 +9,17 @@ import { TenantProvisioningConfigService } from '../tenant-provisioning/services
 import { ActivationTokenService } from './services/activation-token.service';
 import { PasswordHasherService } from './services/password-hasher.service';
 import { PasswordPolicyService } from './services/password-policy.service';
+import { RefreshTokenService } from './services/refresh-token.service';
+import { StoreAccessTokenService } from './services/store-access-token.service';
+import { StoreAuthenticationLogoutService } from './services/store-authentication-logout.service';
+import { StoreAuthenticationRefreshService } from './services/store-authentication-refresh.service';
+import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
+import { StoreAuthSessionConfigService } from './services/store-auth-session-config.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
+import { StoreOwnerLoginService } from './services/store-owner-login.service';
 import { StoreTenantAccessService } from './services/store-tenant-access.service';
+import { StoreAuthController } from './store-auth.controller';
 import { StoreAuthModule } from './store-auth.module';
 
 describe('StoreAuthModule', () => {
@@ -20,10 +29,15 @@ describe('StoreAuthModule', () => {
     ActivationTokenService,
     StoreOwnerActivationConfigService,
     StoreOwnerActivationService,
+    StoreOwnerLoginService,
+    StoreAccessTokenService,
+    StoreAuthenticationSessionService,
+    StoreAuthenticationRefreshService,
+    StoreAuthenticationLogoutService,
     StoreTenantAccessService,
   ];
 
-  it('imports only the narrow configuration and Master database modules', () => {
+  it('imports only the narrow configuration, Master database, and JWT modules', () => {
     const imports = Reflect.getMetadata(
       MODULE_METADATA.IMPORTS,
       StoreAuthModule,
@@ -33,8 +47,10 @@ describe('StoreAuthModule', () => {
       StoreAuthModule,
     ) as unknown[] | undefined;
 
-    expect(imports).toEqual([ConfigModule, DatabaseModule]);
-    expect(controllers ?? []).toEqual([]);
+    expect(imports).toHaveLength(3);
+    expect(imports.slice(0, 2)).toEqual([ConfigModule, DatabaseModule]);
+    expect(imports[2]).toMatchObject({ module: JwtModule });
+    expect(controllers).toEqual([StoreAuthController]);
   });
 
   it('provides the access dependencies and exports only Store Auth services', () => {
@@ -53,6 +69,13 @@ describe('StoreAuthModule', () => {
       ActivationTokenService,
       StoreOwnerActivationConfigService,
       StoreOwnerActivationService,
+      StoreOwnerLoginService,
+      StoreAuthSessionConfigService,
+      RefreshTokenService,
+      StoreAccessTokenService,
+      StoreAuthenticationSessionService,
+      StoreAuthenticationRefreshService,
+      StoreAuthenticationLogoutService,
       TenantProvisioningConfigService,
       TenantCredentialEncryptionService,
       StoreTenantAccessService,
@@ -74,6 +97,24 @@ describe('StoreAuthModule', () => {
       );
       expect(moduleRef.get(StoreOwnerActivationService)).toBeInstanceOf(
         StoreOwnerActivationService,
+      );
+      expect(moduleRef.get(StoreOwnerLoginService)).toBeInstanceOf(
+        StoreOwnerLoginService,
+      );
+      expect(moduleRef.get(StoreAccessTokenService)).toBeInstanceOf(
+        StoreAccessTokenService,
+      );
+      expect(moduleRef.get(StoreAuthenticationSessionService)).toBeInstanceOf(
+        StoreAuthenticationSessionService,
+      );
+      expect(moduleRef.get(StoreAuthenticationRefreshService)).toBeInstanceOf(
+        StoreAuthenticationRefreshService,
+      );
+      expect(moduleRef.get(StoreAuthenticationLogoutService)).toBeInstanceOf(
+        StoreAuthenticationLogoutService,
+      );
+      expect(moduleRef.get(StoreAuthController)).toBeInstanceOf(
+        StoreAuthController,
       );
       await moduleRef.close();
     } finally {
