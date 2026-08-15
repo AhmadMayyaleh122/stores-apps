@@ -15,16 +15,22 @@ import {
   PATH_METADATA,
   ROUTE_ARGS_METADATA,
 } from '@nestjs/common/constants';
+import { JwtService } from '@nestjs/jwt';
 
+import { PrismaService } from '../../database/prisma.service';
+import { StoreAuthenticationLogoutDto } from './dto/store-authentication-logout.dto';
 import { StoreOwnerLoginDto } from './dto/store-owner-login.dto';
 import { StoreAuthenticationRefreshDto } from './dto/store-authentication-refresh.dto';
 import { RefreshTokenService } from './services/refresh-token.service';
 import { StoreAccessTokenService } from './services/store-access-token.service';
+import { StoreAuthenticationLogoutService } from './services/store-authentication-logout.service';
 import { StoreAuthenticationRefreshService } from './services/store-authentication-refresh.service';
 import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
 import { StoreOwnerLoginService } from './services/store-owner-login.service';
+import { StoreTenantAccessService } from './services/store-tenant-access.service';
 import {
   StoreAuthController,
+  StoreAuthenticationLogoutHttpResponse,
   StoreAuthenticationRefreshHttpResponse,
   StoreOwnerLoginHttpResponse,
 } from './store-auth.controller';
@@ -53,9 +59,13 @@ describe('StoreAuthController', () => {
   const refreshDto: StoreAuthenticationRefreshDto = {
     refreshToken: authenticationState.refreshToken,
   };
+  const logoutDto: StoreAuthenticationLogoutDto = {
+    refreshToken: authenticationState.refreshToken,
+  };
   let authenticateOwner: jest.Mock;
   let createOwnerAuthenticationState: jest.Mock;
   let refreshOwnerAuthenticationState: jest.Mock;
+  let logoutOwnerSession: jest.Mock;
   let controller: StoreAuthController;
 
   beforeEach(() => {
@@ -66,6 +76,7 @@ describe('StoreAuthController', () => {
     refreshOwnerAuthenticationState = jest
       .fn()
       .mockResolvedValue(authenticationState);
+    logoutOwnerSession = jest.fn().mockResolvedValue(undefined);
     controller = new StoreAuthController(
       { authenticateOwner } as unknown as StoreOwnerLoginService,
       {
@@ -74,6 +85,7 @@ describe('StoreAuthController', () => {
       {
         refreshOwnerAuthenticationState,
       } as unknown as StoreAuthenticationRefreshService,
+      { logoutOwnerSession } as unknown as StoreAuthenticationLogoutService,
     );
   });
 
@@ -96,7 +108,7 @@ describe('StoreAuthController', () => {
     ]);
   });
 
-  it('depends only on the three Store Auth orchestration services', () => {
+  it('depends only on the four Store Auth orchestration services', () => {
     const dependencies = Reflect.getMetadata(
       PARAMTYPES_METADATA,
       StoreAuthController,
@@ -106,9 +118,13 @@ describe('StoreAuthController', () => {
       StoreOwnerLoginService,
       StoreAuthenticationSessionService,
       StoreAuthenticationRefreshService,
+      StoreAuthenticationLogoutService,
     ]);
     expect(dependencies).not.toContain(RefreshTokenService);
     expect(dependencies).not.toContain(StoreAccessTokenService);
+    expect(dependencies).not.toContain(StoreTenantAccessService);
+    expect(dependencies).not.toContain(PrismaService);
+    expect(dependencies).not.toContain(JwtService);
   });
 
   it('authenticates once, creates one session, and returns only public data', async () => {
@@ -563,6 +579,195 @@ describe('StoreAuthController', () => {
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(refreshOwnerAuthenticationState).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('logout', () => {
+    it('exposes POST /store/auth/logout as HTTP 200 with no-store headers and no cookies', () => {
+      const handler = StoreAuthController.prototype.logout;
+      const headers = Reflect.getMetadata(HEADERS_METADATA, handler);
+
+      expect(Reflect.getMetadata(PATH_METADATA, StoreAuthController)).toBe(
+        'store/auth',
+      );
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe('logout');
+      expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
+        RequestMethod.POST,
+      );
+      expect(Reflect.getMetadata(HTTP_CODE_METADATA, handler)).toBe(
+        HttpStatus.OK,
+      );
+      expect(headers).toEqual([
+        { name: 'Pragma', value: 'no-cache' },
+        { name: 'Cache-Control', value: 'no-store' },
+      ]);
+      expect(headers).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'Set-Cookie' }),
+        ]),
+      );
+      expect(
+        Reflect.getMetadata(
+          ROUTE_ARGS_METADATA,
+          StoreAuthController,
+          'logout',
+        ),
+      ).toEqual({
+        '3:1': { index: 1, data: undefined, pipes: [] },
+        '6:0': { index: 0, data: 'x-store-slug', pipes: [] },
+      });
+    });
+
+    it('calls only the logout primitive once and returns the stable minimal envelope', async () => {
+      const response = await controller.logout(storeSlug, logoutDto);
+
+      expect(logoutOwnerSession).toHaveBeenCalledTimes(1);
+      expect(logoutOwnerSession).toHaveBeenCalledWith(
+        storeSlug,
+        logoutDto.refreshToken,
+      );
+      expect(authenticateOwner).not.toHaveBeenCalled();
+      expect(createOwnerAuthenticationState).not.toHaveBeenCalled();
+      expect(refreshOwnerAuthenticationState).not.toHaveBeenCalled();
+      expect(response).toEqual({
+        success: true,
+        message: 'Store logout successful',
+        data: {},
+      } satisfies StoreAuthenticationLogoutHttpResponse);
+      expect(Object.keys(response.data)).toEqual([]);
+      expect(JSON.stringify(response)).not.toMatch(
+        /sessionId|ownerId|storeId|refreshToken|tokenHash|revokedAt|database|accessToken/i,
+      );
+    });
+
+    it('passes the x-store-slug and raw refresh token through unchanged without inspecting an access token', async () => {
+      const suppliedHeader = 'Demo-Store ';
+
+      await controller.logout(suppliedHeader, logoutDto);
+
+      expect(logoutOwnerSession).toHaveBeenCalledWith(
+        suppliedHeader,
+        authenticationState.refreshToken,
+      );
+      expect(logoutOwnerSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      'unknown token',
+      'expired token',
+      'already revoked token',
+      'old rotated token',
+      'cross-tenant no-match',
+      'malformed domain token',
+    ])('returns the same success envelope for %s', async () => {
+      logoutOwnerSession.mockResolvedValue(undefined);
+
+      await expect(
+        controller.logout(storeSlug, logoutDto),
+      ).resolves.toEqual({
+        success: true,
+        message: 'Store logout successful',
+        data: {},
+      });
+      expect(logoutOwnerSession).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([undefined, '', 'Demo Store', 'demo--store'])(
+      'maps missing or malformed store slug %p to the existing safe 400',
+      async (invalidSlug) => {
+        logoutOwnerSession.mockRejectedValue(
+          unsafeDomainError(
+            StoreAuthErrorCode.STORE_SLUG_INVALID,
+            String(invalidSlug),
+          ),
+        );
+
+        await expectHttpError(
+          controller.logout(invalidSlug, logoutDto),
+          BadRequestException,
+          HttpStatus.BAD_REQUEST,
+          { success: false, message: 'Store identifier is invalid.' },
+          [String(invalidSlug), logoutDto.refreshToken],
+        );
+      },
+    );
+
+    it.each([
+      StoreAuthErrorCode.TENANT_UNAVAILABLE,
+      StoreAuthErrorCode.TENANT_CONFIGURATION_INVALID,
+      StoreAuthErrorCode.TENANT_IDENTITY_INVALID,
+      StoreAuthErrorCode.TENANT_ACCESS_FAILED,
+      StoreAuthErrorCode.TENANT_CLEANUP_FAILED,
+    ])('sanitizes tenant failure %s as 503', async (code) => {
+      logoutOwnerSession.mockRejectedValue(
+        unsafeDomainError(
+          code,
+          `postgresql://tenant:password@db.internal ${logoutDto.refreshToken}`,
+        ),
+      );
+
+      await expectHttpError(
+        controller.logout(storeSlug, logoutDto),
+        ServiceUnavailableException,
+        HttpStatus.SERVICE_UNAVAILABLE,
+        {
+          success: false,
+          message: 'Store logout is temporarily unavailable.',
+        },
+        [
+          'postgresql://',
+          'password',
+          'db.internal',
+          logoutDto.refreshToken,
+        ],
+      );
+    });
+
+    it.each([
+      StoreAuthErrorCode.REFRESH_TOKEN_HASHING_FAILED,
+      StoreAuthErrorCode.AUTH_LOGOUT_FAILED,
+    ])('sanitizes logout failure %s as 500', async (code) => {
+      logoutOwnerSession.mockRejectedValue(
+        unsafeDomainError(code, logoutDto.refreshToken),
+      );
+
+      await expectHttpError(
+        controller.logout(storeSlug, logoutDto),
+        InternalServerErrorException,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        { success: false, message: 'Store logout could not be completed.' },
+        [logoutDto.refreshToken],
+      );
+    });
+
+    it('sanitizes unknown persistence failures', async () => {
+      logoutOwnerSession.mockRejectedValue(
+        new Error(`SQL session detail ${logoutDto.refreshToken}`),
+      );
+
+      await expectHttpError(
+        controller.logout(storeSlug, logoutDto),
+        InternalServerErrorException,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        { success: false, message: 'Store logout could not be completed.' },
+        [logoutDto.refreshToken, 'SQL session detail'],
+      );
+    });
+
+    it('does not call logout when global DTO validation rejects the request', async () => {
+      const validationPipe = new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      });
+
+      await expect(
+        validationPipe.transform(
+          { refreshToken: '', ownerId: owner.ownerId },
+          { type: 'body', metatype: StoreAuthenticationLogoutDto },
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(logoutOwnerSession).not.toHaveBeenCalled();
     });
   });
 });
