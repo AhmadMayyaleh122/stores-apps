@@ -13,6 +13,8 @@ import {
 } from '@nestjs/common';
 
 import { StoreOwnerLoginDto } from './dto/store-owner-login.dto';
+import { StoreAuthenticationRefreshDto } from './dto/store-authentication-refresh.dto';
+import { StoreAuthenticationRefreshService } from './services/store-authentication-refresh.service';
 import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
 import { StoreOwnerLoginService } from './services/store-owner-login.service';
 import {
@@ -25,10 +27,27 @@ const STORE_LOGIN_SUCCESS_MESSAGE = 'Store owner login successful';
 const STORE_LOGIN_UNAVAILABLE_MESSAGE =
   'Store login is temporarily unavailable.';
 const STORE_LOGIN_FAILED_MESSAGE = 'Store login could not be completed.';
+const STORE_REFRESH_SUCCESS_MESSAGE =
+  'Store authentication refreshed successfully';
+const STORE_REFRESH_UNAVAILABLE_MESSAGE =
+  'Store authentication refresh is temporarily unavailable.';
+const STORE_REFRESH_FAILED_MESSAGE =
+  'Store authentication refresh could not be completed.';
 
 export interface StoreOwnerLoginHttpResponse {
   readonly success: true;
   readonly message: typeof STORE_LOGIN_SUCCESS_MESSAGE;
+  readonly data: {
+    readonly accessToken: string;
+    readonly accessTokenExpiresAt: string;
+    readonly refreshToken: string;
+    readonly refreshTokenExpiresAt: string;
+  };
+}
+
+export interface StoreAuthenticationRefreshHttpResponse {
+  readonly success: true;
+  readonly message: typeof STORE_REFRESH_SUCCESS_MESSAGE;
   readonly data: {
     readonly accessToken: string;
     readonly accessTokenExpiresAt: string;
@@ -42,6 +61,7 @@ export class StoreAuthController {
   constructor(
     private readonly storeOwnerLoginService: StoreOwnerLoginService,
     private readonly authenticationSessionService: StoreAuthenticationSessionService,
+    private readonly authenticationRefreshService: StoreAuthenticationRefreshService,
   ) {}
 
   @Post('login')
@@ -81,6 +101,38 @@ export class StoreAuthController {
       translateStoreLoginError(error);
     }
   }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'no-store')
+  @Header('Pragma', 'no-cache')
+  async refresh(
+    @Headers('x-store-slug') storeSlug: string | undefined,
+    @Body() refreshDto: StoreAuthenticationRefreshDto,
+  ): Promise<StoreAuthenticationRefreshHttpResponse> {
+    try {
+      const authenticationState =
+        await this.authenticationRefreshService.refreshOwnerAuthenticationState(
+          storeSlug,
+          refreshDto.refreshToken,
+        );
+
+      return {
+        success: true,
+        message: STORE_REFRESH_SUCCESS_MESSAGE,
+        data: {
+          accessToken: authenticationState.accessToken,
+          accessTokenExpiresAt:
+            authenticationState.accessTokenExpiresAt.toISOString(),
+          refreshToken: authenticationState.refreshToken,
+          refreshTokenExpiresAt:
+            authenticationState.refreshTokenExpiresAt.toISOString(),
+        },
+      };
+    } catch (error) {
+      translateStoreRefreshError(error);
+    }
+  }
 }
 
 function translateStoreLoginError(error: unknown): never {
@@ -116,5 +168,39 @@ function translateStoreLoginError(error: unknown): never {
   throw new InternalServerErrorException({
     success: false,
     message: STORE_LOGIN_FAILED_MESSAGE,
+  });
+}
+
+function translateStoreRefreshError(error: unknown): never {
+  if (error instanceof StoreAuthError) {
+    switch (error.code) {
+      case StoreAuthErrorCode.STORE_SLUG_INVALID:
+        throw new BadRequestException({
+          success: false,
+          message:
+            STORE_AUTH_SAFE_MESSAGES[StoreAuthErrorCode.STORE_SLUG_INVALID],
+        });
+      case StoreAuthErrorCode.AUTH_REFRESH_INVALID:
+      case StoreAuthErrorCode.REFRESH_TOKEN_INVALID:
+      case StoreAuthErrorCode.TENANT_UNAVAILABLE:
+        throw new UnauthorizedException({
+          success: false,
+          message:
+            STORE_AUTH_SAFE_MESSAGES[StoreAuthErrorCode.AUTH_REFRESH_INVALID],
+        });
+      case StoreAuthErrorCode.TENANT_CONFIGURATION_INVALID:
+      case StoreAuthErrorCode.TENANT_IDENTITY_INVALID:
+      case StoreAuthErrorCode.TENANT_ACCESS_FAILED:
+      case StoreAuthErrorCode.TENANT_CLEANUP_FAILED:
+        throw new ServiceUnavailableException({
+          success: false,
+          message: STORE_REFRESH_UNAVAILABLE_MESSAGE,
+        });
+    }
+  }
+
+  throw new InternalServerErrorException({
+    success: false,
+    message: STORE_REFRESH_FAILED_MESSAGE,
   });
 }
