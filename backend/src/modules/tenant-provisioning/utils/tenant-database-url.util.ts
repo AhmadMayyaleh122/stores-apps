@@ -2,6 +2,7 @@ import {
   createTenantProvisioningError,
   TenantProvisioningErrorCode,
 } from '../tenant-provisioning.errors';
+import { isIP } from 'node:net';
 import { validatePostgresIdentifier } from './tenant-database-identifier.util';
 
 export const TENANT_DATABASE_SSL_MODES = [
@@ -62,6 +63,45 @@ export function buildTenantDatabaseUrl(
       TenantProvisioningErrorCode.DATABASE_URL_INVALID,
     );
   }
+}
+
+export function normalizeTenantDatabaseHostname(hostname: string): string {
+  let normalized = hostname.trim().toLowerCase();
+
+  if (normalized.startsWith('[') && normalized.endsWith(']')) {
+    const unbracketedHostname = normalized.slice(1, -1);
+
+    if (isIP(unbracketedHostname) !== 6) {
+      throw createTenantProvisioningError(
+        TenantProvisioningErrorCode.DATABASE_URL_INVALID,
+      );
+    }
+
+    normalized = unbracketedHostname;
+  }
+
+  if (!normalized.includes(':') && normalized.endsWith('.')) {
+    normalized = normalized.slice(0, -1);
+  }
+
+  if (!normalized) {
+    throw createTenantProvisioningError(
+      TenantProvisioningErrorCode.DATABASE_URL_INVALID,
+    );
+  }
+
+  const ipVersion = isIP(normalized);
+
+  if (
+    normalized === 'localhost' ||
+    (ipVersion === 4 && Number(normalized.split('.')[0]) === 127) ||
+    (ipVersion === 6 &&
+      (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1'))
+  ) {
+    return 'loopback';
+  }
+
+  return normalized;
 }
 
 function parseHostname(value: string): string {

@@ -1,0 +1,1085 @@
+import { Injectable } from '@nestjs/common';
+import { PrismaPg } from '@prisma/adapter-pg';
+
+import {
+  Prisma,
+  TenantProvisioningStatus,
+} from '../../../../generated/prisma/client';
+import {
+  EmployeeStatus,
+  PrismaClient as TenantPrismaClient,
+} from '../../../../generated/tenant-prisma/client';
+import { PrismaService } from '../../../database/prisma.service';
+import { TenantCredentialEncryptionService } from '../../tenant-provisioning/services/tenant-credential-encryption.service';
+import {
+  TenantAccessConfiguration,
+  TenantProvisioningConfigService,
+} from '../../tenant-provisioning/services/tenant-provisioning-config.service';
+import {
+  normalizeCanonicalUuid,
+  validatePostgresIdentifier,
+} from '../../tenant-provisioning/utils/tenant-database-identifier.util';
+import {
+  buildTenantDatabaseUrl,
+  normalizeTenantDatabaseHostname,
+} from '../../tenant-provisioning/utils/tenant-database-url.util';
+import {
+  createStoreAuthError,
+  STORE_AUTH_SAFE_MESSAGES,
+  StoreAuthError,
+  StoreAuthErrorCode,
+} from '../store-auth.errors';
+
+const STORE_SLUG_MIN_LENGTH = 2;
+const STORE_SLUG_MAX_LENGTH = 80;
+const CANONICAL_STORE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+const STORE_TENANT_ACCESS_SELECT = {
+  id: true,
+  storeSlug: true,
+  tenantDatabase: {
+    select: {
+      id: true,
+      storeId: true,
+      status: true,
+      databaseName: true,
+      databaseHost: true,
+      databasePort: true,
+      databaseUser: true,
+      databasePasswordEncrypted: true,
+      encryptionKeyVersion: true,
+    },
+  },
+} satisfies Prisma.StoreSelect;
+
+type StoreTenantAccessRecord = Prisma.StoreGetPayload<{
+  select: typeof STORE_TENANT_ACCESS_SELECT;
+}>;
+
+interface TenantIdentityRecord {
+  id: number;
+  masterStoreId: string;
+}
+
+interface LockedOwnerRow {
+  id: string;
+}
+
+interface DatabaseClockRow {
+  authoritativeTime: Date;
+}
+
+interface ActivationOwnerRecord {
+  id: string;
+  status: EmployeeStatus;
+  isStoreOwner: boolean;
+  masterStoreId: string | null;
+  role: {
+    key: string;
+    name: string;
+    isSystem: boolean;
+  };
+  credential: { employeeId: string } | null;
+}
+
+interface ActivationTokenRecord {
+  id: string;
+  employeeId: string;
+  tokenHash: Uint8Array;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+}
+
+interface TenantStoreAuthTransactionBoundary {
+  $queryRaw<T>(
+    query: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<T>;
+  tenantIdentity: {
+    findUnique(options: {
+      where: { id: number };
+      select: { id: true; masterStoreId: true };
+    }): Promise<TenantIdentityRecord | null>;
+  };
+  employee: {
+    findUnique(options: {
+      where: { id: string };
+      select: typeof ACTIVATION_OWNER_SELECT;
+    }): Promise<ActivationOwnerRecord | null>;
+    updateMany(options: {
+      where: {
+        id: string;
+        status: EmployeeStatus;
+        isStoreOwner: true;
+        masterStoreId: string;
+      };
+      data: { status: EmployeeStatus };
+    }): Promise<{ count: number }>;
+  };
+  employeeCredential: {
+    create(options: {
+      data: {
+        employeeId: string;
+        passwordHash: string;
+        passwordChangedAt: Date;
+      };
+      select: { employeeId: true };
+    }): Promise<{ employeeId: string }>;
+  };
+  employeeActivationToken: {
+    findUnique(options: {
+      where: { tokenHash: Buffer };
+      select: typeof ACTIVATION_TOKEN_SELECT;
+    }): Promise<ActivationTokenRecord | null>;
+    updateMany(options: {
+      where: {
+        id?: string;
+        employeeId: string;
+        tokenHash?: Buffer;
+        consumedAt: null;
+        revokedAt: null;
+        expiresAt?: { gt: Date };
+      };
+      data: { consumedAt?: Date; revokedAt?: Date };
+    }): Promise<{ count: number }>;
+    create(options: {
+      data: {
+        employeeId: string;
+        tokenHash: Buffer;
+        expiresAt: Date;
+        createdAt: Date;
+      };
+      select: { id: true };
+    }): Promise<{ id: string }>;
+  };
+}
+
+interface TenantStoreAuthPrismaClientBoundary {
+  $transaction<T>(
+    operation: (
+      transaction: TenantStoreAuthTransactionBoundary,
+    ) => Promise<T>,
+  ): Promise<T>;
+}
+
+interface TenantStoreAuthAdvisoryClientBoundary {
+  $queryRaw<T>(
+    query: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<T>;
+  employee: {
+    findMany(options: {
+      where: { isStoreOwner: true };
+      select: typeof ACTIVATION_OWNER_SELECT;
+      orderBy: { id: 'asc' };
+      take: 2;
+    }): Promise<ActivationOwnerRecord[]>;
+  };
+  employeeActivationToken: {
+    findUnique(options: {
+      where: { tokenHash: Buffer };
+      select: typeof ACTIVATION_TOKEN_SELECT;
+    }): Promise<ActivationTokenRecord | null>;
+  };
+}
+
+interface TenantIdentityClientBoundary {
+  tenantIdentity: {
+    findUnique(options: {
+      where: { id: number };
+      select: { id: true; masterStoreId: true };
+    }): Promise<TenantIdentityRecord | null>;
+  };
+  $disconnect(): Promise<void>;
+}
+
+interface ResolvedTenantConnection {
+  storeId: string;
+  tenantDatabaseUrl: string;
+  connectionTimeoutMs: number;
+}
+
+export interface VerifiedStoreTenantContext {
+  readonly storeId: string;
+  readonly tenantAccess: StoreAuthTenantAccess;
+}
+
+export interface StoreAuthTenantAccess {
+  readonly kind: 'STORE_AUTH_TENANT_ACCESS';
+  checkOwnerActivationEligibility(
+    input: CheckOwnerActivationEligibilityInput,
+  ): Promise<boolean>;
+  issueOwnerActivation(
+    input: IssueOwnerActivationMutation,
+  ): Promise<OwnerActivationIssuanceOutcome>;
+  activateOwner(input: ActivateOwnerMutation): Promise<ActivateOwnerOutcome>;
+}
+
+export interface CheckOwnerActivationEligibilityInput {
+  readonly tokenHash: Buffer;
+}
+
+export interface IssueOwnerActivationMutation {
+  readonly tokenHash: Buffer;
+  readonly ttlMinutes: number;
+}
+
+export interface ActivateOwnerMutation {
+  readonly tokenHash: Buffer;
+  readonly passwordHash: string;
+}
+
+export interface OwnerActivationIssuedOutcome {
+  readonly issuedAt: Date;
+  readonly expiresAt: Date;
+}
+
+export interface ActivateOwnerOutcome {
+  readonly activatedAt: Date;
+}
+
+export type OwnerActivationIssuanceOutcome =
+  | OwnerActivationIssuedOutcome
+  | 'TOKEN_HASH_COLLISION';
+
+export type VerifiedStoreTenantOperation<T> = (
+  context: VerifiedStoreTenantContext,
+) => T | Promise<T>;
+
+@Injectable()
+export class StoreTenantAccessService {
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly configService: TenantProvisioningConfigService,
+    private readonly credentialEncryptionService: TenantCredentialEncryptionService,
+  ) {}
+
+  async withResolvedTenant<T>(
+    storeSlug: unknown,
+    operation: VerifiedStoreTenantOperation<T>,
+  ): Promise<T> {
+    const canonicalStoreSlug = requireCanonicalStoreSlug(storeSlug);
+    const connection = await this.resolveTenantConnection(canonicalStoreSlug);
+    let tenantPrisma: TenantPrismaClient;
+    let committedSecurityMutation = false;
+
+    try {
+      tenantPrisma = this.createTenantPrismaClient(
+        connection.tenantDatabaseUrl,
+        connection.connectionTimeoutMs,
+      );
+    } catch {
+      throw createStoreAuthError(StoreAuthErrorCode.TENANT_ACCESS_FAILED);
+    }
+
+    let result: T | undefined;
+    let failure: StoreAuthError | undefined;
+
+    try {
+      await verifyTenantIdentity(tenantPrisma, connection.storeId);
+      result = await operation(
+        Object.freeze({
+          storeId: connection.storeId,
+          tenantAccess: createStoreAuthTenantAccess(
+            tenantPrisma,
+            connection.storeId,
+            () => {
+              committedSecurityMutation = true;
+            },
+          ),
+        }),
+      );
+    } catch (error) {
+      failure = preserveStoreAuthError(error);
+    } finally {
+      try {
+        await tenantPrisma.$disconnect();
+      } catch {
+        if (!failure && !committedSecurityMutation) {
+          failure = createStoreAuthError(
+            StoreAuthErrorCode.TENANT_CLEANUP_FAILED,
+          );
+        }
+      }
+    }
+
+    if (failure) {
+      throw failure;
+    }
+
+    return result as T;
+  }
+
+  protected createTenantPrismaClient(
+    tenantDatabaseUrl: string,
+    connectionTimeoutMs: number,
+  ): TenantPrismaClient {
+    const adapter = new PrismaPg({
+      connectionString: tenantDatabaseUrl,
+      max: 1,
+      connectionTimeoutMillis: connectionTimeoutMs,
+    });
+
+    return new TenantPrismaClient({ adapter });
+  }
+
+  private async resolveTenantConnection(
+    storeSlug: string,
+  ): Promise<ResolvedTenantConnection> {
+    let store: StoreTenantAccessRecord | null;
+
+    try {
+      store = await this.prismaService.store.findUnique({
+        where: { storeSlug },
+        select: STORE_TENANT_ACCESS_SELECT,
+      });
+    } catch {
+      throw createStoreAuthError(StoreAuthErrorCode.TENANT_ACCESS_FAILED);
+    }
+
+    if (
+      !store?.tenantDatabase ||
+      store.tenantDatabase.status !== TenantProvisioningStatus.READY
+    ) {
+      throw createStoreAuthError(StoreAuthErrorCode.TENANT_UNAVAILABLE);
+    }
+
+    return this.buildResolvedTenantConnection(
+      store,
+      store.tenantDatabase,
+      storeSlug,
+    );
+  }
+
+  private buildResolvedTenantConnection(
+    store: StoreTenantAccessRecord,
+    tenantDatabase: NonNullable<StoreTenantAccessRecord['tenantDatabase']>,
+    storeSlug: string,
+  ): ResolvedTenantConnection {
+    try {
+      const storeId = normalizeCanonicalUuid(store.id);
+      const tenantStoreId = normalizeCanonicalUuid(tenantDatabase.storeId);
+      normalizeCanonicalUuid(tenantDatabase.id);
+      const databaseName = validatePostgresIdentifier(
+        tenantDatabase.databaseName,
+      );
+      const databaseUser = validatePostgresIdentifier(
+        tenantDatabase.databaseUser as string,
+      );
+
+      if (
+        store.storeSlug !== storeSlug ||
+        tenantStoreId !== storeId ||
+        typeof tenantDatabase.databaseHost !== 'string' ||
+        tenantDatabase.databaseHost.trim().length === 0 ||
+        !Number.isInteger(tenantDatabase.databasePort) ||
+        tenantDatabase.databasePort! < 1 ||
+        tenantDatabase.databasePort! > 65535 ||
+        typeof tenantDatabase.databasePasswordEncrypted !== 'string' ||
+        tenantDatabase.databasePasswordEncrypted.length === 0 ||
+        !Number.isInteger(tenantDatabase.encryptionKeyVersion) ||
+        tenantDatabase.encryptionKeyVersion! < 1
+      ) {
+        throw createStoreAuthError(
+          StoreAuthErrorCode.TENANT_CONFIGURATION_INVALID,
+        );
+      }
+
+      const configuration = this.configService.getTenantAccessConfiguration(
+        tenantDatabase.encryptionKeyVersion,
+      );
+      assertConnectionConfigurationMatches(
+        tenantDatabase.databaseHost,
+        tenantDatabase.databasePort!,
+        configuration,
+      );
+      const plaintextPassword = this.decryptTenantPassword(
+        tenantDatabase,
+        storeId,
+        databaseName,
+        databaseUser,
+        configuration,
+      );
+      const tenantDatabaseUrl = buildTenantDatabaseUrl({
+        hostname: configuration.tenantDatabaseHost,
+        port: configuration.tenantDatabasePort,
+        databaseName,
+        databaseUser,
+        password: plaintextPassword,
+        sslMode: configuration.tenantDatabaseSslMode,
+      });
+
+      return {
+        storeId,
+        tenantDatabaseUrl,
+        connectionTimeoutMs:
+          configuration.tenantPostgresConnectionTimeoutMs,
+      };
+    } catch (error) {
+      if (error instanceof StoreAuthError) {
+        throw error;
+      }
+
+      throw createStoreAuthError(
+        StoreAuthErrorCode.TENANT_CONFIGURATION_INVALID,
+      );
+    }
+  }
+
+  private decryptTenantPassword(
+    tenantDatabase: NonNullable<StoreTenantAccessRecord['tenantDatabase']>,
+    storeId: string,
+    databaseName: string,
+    databaseUser: string,
+    configuration: TenantAccessConfiguration,
+  ): string {
+    const encryptionKey = configuration.encryptionKey.copyKeyMaterial();
+
+    try {
+      return this.credentialEncryptionService.decryptPassword(
+        tenantDatabase.databasePasswordEncrypted!,
+        configuration.encryptionKeyVersion,
+        {
+          tenantDatabaseRecordId: tenantDatabase.id,
+          storeId,
+          databaseName,
+          databaseUser,
+          keyVersion: configuration.encryptionKeyVersion,
+        },
+        encryptionKey,
+      );
+    } finally {
+      encryptionKey.fill(0);
+    }
+  }
+}
+
+const ACTIVATION_OWNER_SELECT = {
+  id: true,
+  status: true,
+  isStoreOwner: true,
+  masterStoreId: true,
+  role: {
+    select: {
+      key: true,
+      name: true,
+      isSystem: true,
+    },
+  },
+  credential: {
+    select: { employeeId: true },
+  },
+} as const;
+
+const ACTIVATION_TOKEN_SELECT = {
+  id: true,
+  employeeId: true,
+  tokenHash: true,
+  expiresAt: true,
+  consumedAt: true,
+  revokedAt: true,
+} as const;
+
+function createStoreAuthTenantAccess(
+  tenantPrisma: TenantPrismaClient,
+  storeId: string,
+  markCommittedSecurityMutation: () => void,
+): StoreAuthTenantAccess {
+  const internalClient =
+    tenantPrisma as unknown as TenantStoreAuthPrismaClientBoundary;
+  const advisoryClient =
+    tenantPrisma as unknown as TenantStoreAuthAdvisoryClientBoundary;
+
+  return Object.freeze(
+    Object.assign(Object.create(null) as object, {
+      kind: 'STORE_AUTH_TENANT_ACCESS' as const,
+      checkOwnerActivationEligibility: async (
+        input: CheckOwnerActivationEligibilityInput,
+      ) =>
+        checkOwnerActivationEligibility(advisoryClient, storeId, input),
+      issueOwnerActivation: async (input: IssueOwnerActivationMutation) => {
+        const outcome = await issueOwnerActivationMutation(
+          internalClient,
+          storeId,
+          input,
+        );
+
+        if (outcome !== 'TOKEN_HASH_COLLISION') {
+          markCommittedSecurityMutation();
+        }
+
+        return outcome;
+      },
+      activateOwner: async (input: ActivateOwnerMutation) => {
+        const outcome = await activateOwnerMutation(
+          internalClient,
+          storeId,
+          input,
+        );
+        markCommittedSecurityMutation();
+        return outcome;
+      },
+    }),
+  ) as StoreAuthTenantAccess;
+}
+
+async function checkOwnerActivationEligibility(
+  tenantPrisma: TenantStoreAuthAdvisoryClientBoundary,
+  storeId: string,
+  input: CheckOwnerActivationEligibilityInput,
+): Promise<boolean> {
+  const tokenHash = copyTokenHash(input.tokenHash, 'activation');
+
+  try {
+    const owners = await tenantPrisma.employee.findMany({
+      where: { isStoreOwner: true },
+      select: ACTIVATION_OWNER_SELECT,
+      orderBy: { id: 'asc' },
+      take: 2,
+    });
+
+    if (owners.length !== 1 || !isEligibleOwner(owners[0], storeId)) {
+      return false;
+    }
+
+    const activationToken =
+      await tenantPrisma.employeeActivationToken.findUnique({
+        where: { tokenHash },
+        select: ACTIVATION_TOKEN_SELECT,
+      });
+
+    if (!activationToken) {
+      return false;
+    }
+
+    const advisoryTime = await readAuthoritativeDatabaseTime(
+      tenantPrisma,
+      'activation',
+    );
+
+    try {
+      requireUsableActivationToken(
+        activationToken,
+        owners[0].id,
+        tokenHash,
+        advisoryTime,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  } finally {
+    tokenHash.fill(0);
+  }
+}
+
+async function issueOwnerActivationMutation(
+  tenantPrisma: TenantStoreAuthPrismaClientBoundary,
+  storeId: string,
+  input: IssueOwnerActivationMutation,
+): Promise<OwnerActivationIssuanceOutcome> {
+  const tokenHash = copyTokenHash(input.tokenHash, 'issuance');
+
+  try {
+    const ttlMinutes = requirePositiveSafeInteger(input.ttlMinutes);
+
+    return await tenantPrisma.$transaction(async (transaction) => {
+      const owner = await lockAndRequireEligibleOwner(
+        transaction,
+        storeId,
+        StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT,
+      );
+      const issuedAt = await readAuthoritativeDatabaseTime(
+        transaction,
+        'issuance',
+      );
+      const expiresAt = calculateExpiration(issuedAt, ttlMinutes);
+
+      await transaction.employeeActivationToken.updateMany({
+        where: {
+          employeeId: owner.id,
+          consumedAt: null,
+          revokedAt: null,
+        },
+        data: { revokedAt: issuedAt },
+      });
+      await transaction.employeeActivationToken.create({
+        data: {
+          employeeId: owner.id,
+          tokenHash,
+          expiresAt,
+          createdAt: issuedAt,
+        },
+        select: { id: true },
+      });
+
+      return Object.freeze({
+        issuedAt: new Date(issuedAt.getTime()),
+        expiresAt: new Date(expiresAt.getTime()),
+      });
+    });
+  } catch (error) {
+    if (
+      isUniqueConstraintViolationFor(
+        error,
+        'EmployeeActivationToken',
+        TOKEN_HASH_UNIQUE_TARGETS,
+      )
+    ) {
+      return 'TOKEN_HASH_COLLISION';
+    }
+
+    if (
+      error instanceof StoreAuthError &&
+      error.code === StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT
+    ) {
+      throw createStoreAuthError(error.code);
+    }
+
+    throw issuanceFailed();
+  } finally {
+    tokenHash.fill(0);
+  }
+}
+
+async function activateOwnerMutation(
+  tenantPrisma: TenantStoreAuthPrismaClientBoundary,
+  storeId: string,
+  input: ActivateOwnerMutation,
+): Promise<ActivateOwnerOutcome> {
+  const tokenHash = copyTokenHash(input.tokenHash, 'activation');
+
+  try {
+    if (
+      typeof input.passwordHash !== 'string' ||
+      input.passwordHash.length === 0 ||
+      input.passwordHash.length > 255
+    ) {
+      throw activationFailed();
+    }
+
+    return await tenantPrisma.$transaction(async (transaction) => {
+      const owner = await lockAndRequireEligibleOwner(
+        transaction,
+        storeId,
+        StoreAuthErrorCode.OWNER_ACTIVATION_INVALID,
+      );
+      const activatedAt = await readAuthoritativeDatabaseTime(
+        transaction,
+        'activation',
+      );
+      const activationToken =
+        await transaction.employeeActivationToken.findUnique({
+          where: { tokenHash },
+          select: ACTIVATION_TOKEN_SELECT,
+        });
+
+      requireUsableActivationToken(
+        activationToken,
+        owner.id,
+        tokenHash,
+        activatedAt,
+      );
+
+      const consumed = await transaction.employeeActivationToken.updateMany({
+        where: {
+          id: activationToken.id,
+          employeeId: owner.id,
+          tokenHash,
+          consumedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: activatedAt },
+        },
+        data: { consumedAt: activatedAt },
+      });
+
+      if (consumed.count !== 1) {
+        throw activationInvalid();
+      }
+
+      await transaction.employeeCredential.create({
+        data: {
+          employeeId: owner.id,
+          passwordHash: input.passwordHash,
+          passwordChangedAt: activatedAt,
+        },
+        select: { employeeId: true },
+      });
+
+      const activated = await transaction.employee.updateMany({
+        where: {
+          id: owner.id,
+          status: EmployeeStatus.PENDING_ACTIVATION,
+          isStoreOwner: true,
+          masterStoreId: storeId,
+        },
+        data: { status: EmployeeStatus.ACTIVE },
+      });
+
+      if (activated.count !== 1) {
+        throw activationInvalid();
+      }
+
+      return Object.freeze({
+        activatedAt: new Date(activatedAt.getTime()),
+      });
+    });
+  } catch (error) {
+    if (
+      error instanceof StoreAuthError &&
+      error.code === StoreAuthErrorCode.OWNER_ACTIVATION_INVALID
+    ) {
+      throw createStoreAuthError(error.code);
+    }
+
+    if (
+      isUniqueConstraintViolationFor(
+        error,
+        'EmployeeCredential',
+        CREDENTIAL_UNIQUE_TARGETS,
+      )
+    ) {
+      throw activationInvalid();
+    }
+
+    throw activationFailed();
+  } finally {
+    tokenHash.fill(0);
+  }
+}
+
+async function lockAndRequireEligibleOwner(
+  transaction: TenantStoreAuthTransactionBoundary,
+  storeId: string,
+  invalidCode:
+    | StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT
+    | StoreAuthErrorCode.OWNER_ACTIVATION_INVALID,
+): Promise<ActivationOwnerRecord> {
+  const lockedOwners = await transaction.$queryRaw<LockedOwnerRow[]>`
+    SELECT "id"
+    FROM "employees"
+    WHERE "is_store_owner" = TRUE
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+
+  if (lockedOwners.length !== 1) {
+    throw createStoreAuthError(invalidCode);
+  }
+
+  await requireTransactionTenantIdentity(transaction, storeId, invalidCode);
+
+  const owner = await transaction.employee.findUnique({
+    where: { id: lockedOwners[0].id },
+    select: ACTIVATION_OWNER_SELECT,
+  });
+
+  if (
+    !owner ||
+    !isEligibleOwner(owner, storeId, lockedOwners[0].id)
+  ) {
+    throw createStoreAuthError(invalidCode);
+  }
+
+  return owner;
+}
+
+function isEligibleOwner(
+  owner: ActivationOwnerRecord,
+  storeId: string,
+  expectedOwnerId = owner.id,
+): boolean {
+  try {
+    return (
+      normalizeCanonicalUuid(owner.id) ===
+        normalizeCanonicalUuid(expectedOwnerId) &&
+      owner.status === EmployeeStatus.PENDING_ACTIVATION &&
+      owner.isStoreOwner === true &&
+      normalizeCanonicalUuid(owner.masterStoreId as string) === storeId &&
+      owner.role.key === 'OWNER' &&
+      owner.role.name === 'Owner' &&
+      owner.role.isSystem === true &&
+      owner.credential === null
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function requireTransactionTenantIdentity(
+  transaction: TenantStoreAuthTransactionBoundary,
+  storeId: string,
+  invalidCode:
+    | StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT
+    | StoreAuthErrorCode.OWNER_ACTIVATION_INVALID,
+): Promise<void> {
+  const identity = await transaction.tenantIdentity.findUnique({
+    where: { id: 1 },
+    select: { id: true, masterStoreId: true },
+  });
+
+  try {
+    if (
+      identity?.id !== 1 ||
+      normalizeCanonicalUuid(identity.masterStoreId) !== storeId
+    ) {
+      throw createStoreAuthError(invalidCode);
+    }
+  } catch {
+    throw createStoreAuthError(invalidCode);
+  }
+}
+
+function requireUsableActivationToken(
+  token: ActivationTokenRecord | null,
+  ownerId: string,
+  expectedHash: Buffer,
+  activatedAt: Date,
+): asserts token is ActivationTokenRecord {
+  if (
+    !token ||
+    token.employeeId !== ownerId ||
+    !Buffer.from(token.tokenHash).equals(expectedHash) ||
+    token.consumedAt !== null ||
+    token.revokedAt !== null ||
+    !(token.expiresAt instanceof Date) ||
+    !Number.isFinite(token.expiresAt.getTime()) ||
+    token.expiresAt.getTime() <= activatedAt.getTime()
+  ) {
+    throw activationInvalid();
+  }
+}
+
+function copyTokenHash(
+  value: unknown,
+  operation: 'issuance' | 'activation',
+): Buffer {
+  if (!Buffer.isBuffer(value) || value.length !== 32) {
+    throw operation === 'issuance' ? issuanceFailed() : activationFailed();
+  }
+
+  return Buffer.from(value);
+}
+
+async function readAuthoritativeDatabaseTime(
+  client: Pick<TenantStoreAuthTransactionBoundary, '$queryRaw'>,
+  operation: 'issuance' | 'activation',
+): Promise<Date> {
+  const rows = await client.$queryRaw<DatabaseClockRow[]>`
+    SELECT date_trunc(
+      'milliseconds',
+      clock_timestamp() AT TIME ZONE 'UTC'
+    ) AS "authoritativeTime"
+  `;
+  const authoritativeTime = rows[0]?.authoritativeTime;
+
+  if (
+    rows.length !== 1 ||
+    !(authoritativeTime instanceof Date) ||
+    !Number.isFinite(authoritativeTime.getTime())
+  ) {
+    throw operation === 'issuance' ? issuanceFailed() : activationFailed();
+  }
+
+  return new Date(authoritativeTime.getTime());
+}
+
+function requirePositiveSafeInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw issuanceFailed();
+  }
+
+  return value as number;
+}
+
+function calculateExpiration(issuedAt: Date, ttlMinutes: number): Date {
+  const ttlMilliseconds = ttlMinutes * 60_000;
+  const expiresAtMilliseconds = issuedAt.getTime() + ttlMilliseconds;
+  const expiresAt = new Date(expiresAtMilliseconds);
+
+  if (
+    !Number.isSafeInteger(ttlMilliseconds) ||
+    !Number.isSafeInteger(expiresAtMilliseconds) ||
+    !Number.isFinite(expiresAt.getTime()) ||
+    expiresAt.getTime() <= issuedAt.getTime()
+  ) {
+    throw issuanceFailed();
+  }
+
+  return expiresAt;
+}
+
+const TOKEN_HASH_UNIQUE_TARGETS = new Set([
+  'tokenHash',
+  'token_hash',
+  'employee_activation_tokens_token_hash_key',
+]);
+
+const CREDENTIAL_UNIQUE_TARGETS = new Set([
+  'employeeId',
+  'employee_id',
+  'employee_credentials_pkey',
+]);
+
+function isUniqueConstraintViolationFor(
+  error: unknown,
+  expectedModelName: 'EmployeeActivationToken' | 'EmployeeCredential',
+  allowedTargets: ReadonlySet<string>,
+): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    !('code' in error) ||
+    error.code !== 'P2002' ||
+    !('meta' in error) ||
+    typeof error.meta !== 'object' ||
+    error.meta === null
+  ) {
+    return false;
+  }
+
+  if (
+    'modelName' in error.meta &&
+    error.meta.modelName !== expectedModelName
+  ) {
+    return false;
+  }
+
+  const legacyTarget =
+    'target' in error.meta
+      ? normalizeUniqueConstraintTarget(error.meta.target)
+      : undefined;
+
+  if (legacyTarget) {
+    return allowedTargets.has(legacyTarget);
+  }
+
+  if (
+    !('driverAdapterError' in error.meta) ||
+    typeof error.meta.driverAdapterError !== 'object' ||
+    error.meta.driverAdapterError === null ||
+    !('cause' in error.meta.driverAdapterError) ||
+    typeof error.meta.driverAdapterError.cause !== 'object' ||
+    error.meta.driverAdapterError.cause === null ||
+    !('kind' in error.meta.driverAdapterError.cause) ||
+    error.meta.driverAdapterError.cause.kind !==
+      'UniqueConstraintViolation' ||
+    !('constraint' in error.meta.driverAdapterError.cause) ||
+    typeof error.meta.driverAdapterError.cause.constraint !== 'object' ||
+    error.meta.driverAdapterError.cause.constraint === null
+  ) {
+    return false;
+  }
+
+  const constraint = error.meta.driverAdapterError.cause.constraint;
+  const adapterTarget =
+    'fields' in constraint
+      ? normalizeUniqueConstraintTarget(constraint.fields)
+      : 'index' in constraint
+        ? normalizeUniqueConstraintTarget(constraint.index)
+        : undefined;
+
+  return adapterTarget !== undefined && allowedTargets.has(adapterTarget);
+}
+
+function normalizeUniqueConstraintTarget(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (
+    Array.isArray(value) &&
+    value.length === 1 &&
+    typeof value[0] === 'string'
+  ) {
+    return value[0];
+  }
+
+  return undefined;
+}
+
+function issuanceFailed(): StoreAuthError {
+  return createStoreAuthError(
+    StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_FAILED,
+  );
+}
+
+function activationInvalid(): StoreAuthError {
+  return createStoreAuthError(StoreAuthErrorCode.OWNER_ACTIVATION_INVALID);
+}
+
+function activationFailed(): StoreAuthError {
+  return createStoreAuthError(StoreAuthErrorCode.OWNER_ACTIVATION_FAILED);
+}
+
+function requireCanonicalStoreSlug(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < STORE_SLUG_MIN_LENGTH ||
+    value.length > STORE_SLUG_MAX_LENGTH ||
+    !CANONICAL_STORE_SLUG_PATTERN.test(value)
+  ) {
+    throw createStoreAuthError(StoreAuthErrorCode.STORE_SLUG_INVALID);
+  }
+
+  return value;
+}
+
+function assertConnectionConfigurationMatches(
+  storedHostname: string,
+  storedPort: number,
+  configuration: TenantAccessConfiguration,
+): void {
+  if (
+    normalizeTenantDatabaseHostname(storedHostname) !==
+      normalizeTenantDatabaseHostname(configuration.tenantDatabaseHost) ||
+    storedPort !== configuration.tenantDatabasePort
+  ) {
+    throw createStoreAuthError(
+      StoreAuthErrorCode.TENANT_CONFIGURATION_INVALID,
+    );
+  }
+}
+
+async function verifyTenantIdentity(
+  tenantPrisma: TenantIdentityClientBoundary,
+  expectedStoreId: string,
+): Promise<void> {
+  let identity: TenantIdentityRecord | null;
+
+  try {
+    identity = await tenantPrisma.tenantIdentity.findUnique({
+      where: { id: 1 },
+      select: { id: true, masterStoreId: true },
+    });
+  } catch {
+    throw createStoreAuthError(StoreAuthErrorCode.TENANT_ACCESS_FAILED);
+  }
+
+  try {
+    if (
+      identity?.id !== 1 ||
+      normalizeCanonicalUuid(identity.masterStoreId) !== expectedStoreId
+    ) {
+      throw createStoreAuthError(StoreAuthErrorCode.TENANT_IDENTITY_INVALID);
+    }
+  } catch (error) {
+    if (error instanceof StoreAuthError) {
+      throw error;
+    }
+
+    throw createStoreAuthError(StoreAuthErrorCode.TENANT_IDENTITY_INVALID);
+  }
+}
+
+function preserveStoreAuthError(error: unknown): StoreAuthError {
+  if (
+    error instanceof StoreAuthError &&
+    Object.prototype.hasOwnProperty.call(STORE_AUTH_SAFE_MESSAGES, error.code)
+  ) {
+    return createStoreAuthError(error.code);
+  }
+
+  return createStoreAuthError(StoreAuthErrorCode.TENANT_ACCESS_FAILED);
+}

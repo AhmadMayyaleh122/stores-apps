@@ -45,6 +45,50 @@ describe('TenantProvisioningConfigService', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
+  it('resolves tenant access configuration without the PostgreSQL admin URL', () => {
+    const { service, get } = createService({ POSTGRES_ADMIN_URL: undefined });
+    const configuration = service.getTenantAccessConfiguration(1);
+
+    expect(configuration).toMatchObject({
+      tenantDatabaseHost: 'localhost',
+      tenantDatabasePort: 5432,
+      tenantDatabaseSslMode: 'disable',
+      tenantPostgresConnectionTimeoutMs: 10000,
+      encryptionKeyVersion: 1,
+    });
+    expect(Object.isFrozen(configuration)).toBe(true);
+    expect(configuration.encryptionKey.copyKeyMaterial()).toEqual(
+      Buffer.alloc(32, 11),
+    );
+    expect(get).not.toHaveBeenCalledWith('POSTGRES_ADMIN_URL');
+    expect(get).not.toHaveBeenCalledWith('DATABASE_URL');
+    expect(get).not.toHaveBeenCalledWith('TENANT_MIGRATION_TIMEOUT_MS');
+    expect(get).not.toHaveBeenCalledWith(
+      'TENANT_CREDENTIAL_ENCRYPTION_KEY_VERSION',
+    );
+  });
+
+  it.each([undefined, null, 0, 2, '1.5']) (
+    'rejects unsupported stored tenant credential key version %p safely',
+    (keyVersion) => {
+      const { service } = createService();
+
+      expect(() => service.getTenantAccessConfiguration(keyVersion)).toThrow(
+        'Tenant provisioning configuration is invalid.',
+      );
+    },
+  );
+
+  it('rejects a missing stored-version encryption key safely', () => {
+    const { service } = createService({
+      TENANT_CREDENTIAL_ENCRYPTION_KEY_V1: undefined,
+    });
+
+    expect(() => service.getTenantAccessConfiguration(1)).toThrow(
+      'Tenant provisioning configuration is invalid.',
+    );
+  });
+
   it('rejects a missing PostgreSQL admin URL', () => {
     const { service } = createService({ POSTGRES_ADMIN_URL: undefined });
 
