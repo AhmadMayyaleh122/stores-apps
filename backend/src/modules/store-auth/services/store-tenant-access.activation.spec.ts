@@ -751,6 +751,329 @@ describe('StoreTenantAccessService activation transactions', () => {
     });
   });
 
+  describe('refresh rotation transaction', () => {
+    const refreshTime = new Date('2026-08-10T18:00:00.000Z');
+    const replacementExpiresAt = new Date('2026-08-11T18:00:00.000Z');
+
+    beforeEach(() => {
+      harness.state.owner.status = EmployeeStatus.ACTIVE;
+      harness.state.credential = passwordHash;
+      harness.state.sessions.push(refreshSessionRecord(tokenHash));
+      harness.hooks.transactionClockTime = refreshTime;
+    });
+
+    it('locks the session and owner, revalidates state, and rotates only the digest', async () => {
+      const issuer = jest.fn(async (context) => {
+        harness.events.push('sign-access-token');
+        expect(context).toEqual({
+          ownerId,
+          storeId,
+          sessionId: 'ffffffff-ffff-4fff-8fff-000000000001',
+          issuedAt: refreshTime,
+        });
+        return {
+          accessToken: 'signed.access.token',
+          expiresAt: new Date('2026-08-10T18:15:00.000Z'),
+        };
+      });
+
+      const outcome = await rotateRefreshSession(
+        tokenHash,
+        secondTokenHash,
+        issuer,
+      );
+
+      expect(outcome).toEqual({
+        accessToken: 'signed.access.token',
+        accessTokenExpiresAt: new Date('2026-08-10T18:15:00.000Z'),
+        refreshTokenExpiresAt: replacementExpiresAt,
+      });
+      expect(Object.keys(outcome as object).sort()).toEqual([
+        'accessToken',
+        'accessTokenExpiresAt',
+        'refreshTokenExpiresAt',
+      ]);
+      expect(harness.state.sessions[0]).toMatchObject({
+        id: 'ffffffff-ffff-4fff-8fff-000000000001',
+        employeeId: ownerId,
+        refreshTokenHash: secondTokenHash,
+        issuedAt: refreshTime,
+        expiresAt: replacementExpiresAt,
+        revokedAt: null,
+      });
+      expect(harness.events).toEqual([
+        'lock-refresh-session',
+        'lock-owner',
+        'verify-identity',
+        'read-refresh-session',
+        'read-owner',
+        'read-clock',
+        'rotate-refresh-session',
+        'sign-access-token',
+      ]);
+      expect(harness.lockQueryText).toContain('FOR UPDATE');
+      expect(issuer).toHaveBeenCalledTimes(1);
+    });
+
+    it('makes the old digest immediately unusable while the replacement remains rotatable', async () => {
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+      ).resolves.toMatchObject({ accessToken: 'signed.access.token' });
+      await expect(
+        rotateRefreshSession(tokenHash, Buffer.alloc(32, 23)),
+      ).resolves.toBe('INVALID_REFRESH');
+      await expect(
+        rotateRefreshSession(secondTokenHash, Buffer.alloc(32, 24)),
+      ).resolves.toMatchObject({ accessToken: 'signed.access.token' });
+    });
+
+    it.each([
+      ['revoked', () => {
+        harness.state.sessions[0].revokedAt = new Date(refreshTime);
+      }],
+      ['expired', () => {
+        harness.state.sessions[0].expiresAt = new Date(refreshTime.getTime() - 1);
+      }],
+      ['expiry equality', () => {
+        harness.state.sessions[0].expiresAt = new Date(refreshTime);
+      }],
+      ['future issuance', () => {
+        harness.state.sessions[0].issuedAt = new Date(refreshTime.getTime() + 1_000);
+      }],
+      ['stored hash mismatch', () => {
+        harness.hooks.sessionReadHash = Buffer.alloc(32, 99);
+      }],
+    ])('rejects a %s session without mutation or signing', async (_label, mutate) => {
+      mutate();
+      const issuer = jest.fn();
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash, issuer),
+      ).resolves.toBe('INVALID_REFRESH');
+      expect(issuer).not.toHaveBeenCalled();
+      expect(harness.events).not.toContain('rotate-refresh-session');
+    });
+
+    it('rejects an unknown digest before owner or clock access', async () => {
+      const issuer = jest.fn();
+
+      await expect(
+        rotateRefreshSession(Buffer.alloc(32, 88), secondTokenHash, issuer),
+      ).resolves.toBe('INVALID_REFRESH');
+      expect(harness.events).toEqual(['lock-refresh-session']);
+      expect(issuer).not.toHaveBeenCalled();
+    });
+
+    it('rejects a refresh session whose owner row is missing', async () => {
+      harness.hooks.ownerLockMissing = true;
+      const issuer = jest.fn();
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash, issuer),
+      ).resolves.toBe('INVALID_REFRESH');
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+      expect(issuer).not.toHaveBeenCalled();
+      expect(harness.events).not.toContain('read-clock');
+    });
+
+    it.each([
+      ['PENDING_ACTIVATION', () => {
+        harness.state.owner.status = EmployeeStatus.PENDING_ACTIVATION;
+      }],
+      ['INACTIVE', () => {
+        harness.state.owner.status = EmployeeStatus.INACTIVE;
+      }],
+      ['SUSPENDED', () => {
+        harness.state.owner.status = EmployeeStatus.SUSPENDED;
+      }],
+      ['not designated owner', () => {
+        harness.state.owner.isStoreOwner = false;
+      }],
+      ['wrong store', () => {
+        harness.state.owner.masterStoreId = otherStoreId;
+      }],
+      ['wrong role key', () => {
+        harness.state.owner.role.key = 'MANAGER';
+      }],
+      ['wrong role name', () => {
+        harness.state.owner.role.name = 'Store Owner';
+      }],
+      ['non-system role', () => {
+        harness.state.owner.role.isSystem = false;
+      }],
+      ['missing credential', () => {
+        harness.state.credential = null;
+      }],
+    ])('revokes an otherwise usable session for ineligible owner state: %s', async (_label, mutate) => {
+      mutate();
+      const issuer = jest.fn();
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash, issuer),
+      ).resolves.toBe('INVALID_REFRESH_REVOKED');
+      expect(harness.state.sessions[0].revokedAt).toEqual(refreshTime);
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+      expect(issuer).not.toHaveBeenCalled();
+    });
+
+    it('blocks a transaction-time tenant identity mismatch without rotation', async () => {
+      harness.state.identityStoreId = otherStoreId;
+
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_INVALID,
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+      expect(harness.events).not.toContain('read-clock');
+    });
+
+    it('allows exactly one concurrent rotation of the same original digest', async () => {
+      const outcomes = await Promise.all([
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        rotateRefreshSession(tokenHash, Buffer.alloc(32, 23)),
+      ]);
+
+      expect(
+        outcomes.filter(
+          (outcome) =>
+            typeof outcome === 'object' && outcome !== null,
+        ),
+      ).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome === 'INVALID_REFRESH')).toHaveLength(1);
+      expect(harness.state.sessions).toHaveLength(1);
+    });
+
+    it('retries only the narrow replacement-digest collision and rolls back the old row', async () => {
+      harness.state.sessions.push(refreshSessionRecord(secondTokenHash));
+      const original = { ...harness.state.sessions[0] };
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+      ).resolves.toBe('REFRESH_TOKEN_HASH_COLLISION');
+      expect(harness.state.sessions[0]).toMatchObject(original);
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+    });
+
+    it('rolls rotation back on update, signing, and commit failures', async () => {
+      harness.hooks.sessionUpdateError = new Error('database detail');
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+
+      delete harness.hooks.sessionUpdateError;
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash, async () => {
+          throw new Error('signer detail');
+        }),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+
+      harness.hooks.transactionCommitError = new Error('commit detail');
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+    });
+
+    it('rolls an ineligibility revocation back on persistence failure', async () => {
+      harness.state.owner.status = EmployeeStatus.SUSPENDED;
+      harness.hooks.sessionUpdateError = new Error('revocation detail');
+
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      expect(harness.state.sessions[0].revokedAt).toBeNull();
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+    });
+
+    it('fails closed on a fence miss, invalid database precision, and expiry overflow', async () => {
+      harness.hooks.sessionUpdateFenceCount = 0;
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_INVALID,
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+
+      delete harness.hooks.sessionUpdateFenceCount;
+      harness.hooks.transactionClockTime = new Date(refreshTime.getTime() + 1);
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+
+      harness.hooks.transactionClockTime = refreshTime;
+      await expectCode(
+        rotateRefreshSession(
+          tokenHash,
+          secondTokenHash,
+          undefined,
+          Number.MAX_SAFE_INTEGER,
+        ),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+    });
+
+    it('rejects invalid digests, equal replacement material, and invalid TTL before mutation', async () => {
+      await expectCode(
+        rotateRefreshSession(Buffer.alloc(31), secondTokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      await expectCode(
+        rotateRefreshSession(tokenHash, Buffer.alloc(31)),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      await expectCode(
+        rotateRefreshSession(tokenHash, tokenHash),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      await expectCode(
+        rotateRefreshSession(tokenHash, secondTokenHash, undefined, 0),
+        StoreAuthErrorCode.AUTH_REFRESH_FAILED,
+      );
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(tokenHash);
+    });
+
+    it('rotates only the selected device session', async () => {
+      const phoneBHash = Buffer.alloc(32, 41);
+      const phoneB = refreshSessionRecord(phoneBHash);
+      harness.state.sessions.push(phoneB);
+
+      await rotateRefreshSession(tokenHash, secondTokenHash);
+
+      expect(harness.state.sessions[0].refreshTokenHash).toEqual(
+        secondTokenHash,
+      );
+      expect(harness.state.sessions[1]).toEqual(phoneB);
+    });
+
+    it('keeps committed rotation and ineligibility revocation successful when disconnect fails', async () => {
+      harness.disconnect.mockRejectedValue(new Error('cleanup detail'));
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+      ).resolves.toMatchObject({ accessToken: 'signed.access.token' });
+
+      harness = createTransactionHarness();
+      (TenantPrismaClient as unknown as jest.Mock).mockReturnValue(
+        harness.client,
+      );
+      harness.state.owner.status = EmployeeStatus.SUSPENDED;
+      harness.state.credential = passwordHash;
+      harness.state.sessions.push(refreshSessionRecord(tokenHash));
+      harness.hooks.transactionClockTime = refreshTime;
+      harness.disconnect.mockRejectedValue(new Error('cleanup detail'));
+
+      await expect(
+        rotateRefreshSession(tokenHash, secondTokenHash),
+      ).resolves.toBe('INVALID_REFRESH_REVOKED');
+    });
+  });
+
   async function issue(hash: Buffer) {
     const outcome = await harness.service.withResolvedTenant(
       'demo-store',
@@ -788,6 +1111,35 @@ describe('StoreTenantAccessService activation transactions', () => {
           refreshTokenHash: Buffer.from(hash),
           ttlMinutes,
         }),
+    );
+  }
+
+  async function rotateRefreshSession(
+    presentedHash: Buffer,
+    replacementHash: Buffer,
+    issuer: ((input: {
+      ownerId: string;
+      storeId: string;
+      sessionId: string;
+      issuedAt: Date;
+    }) => Promise<{ accessToken: string; expiresAt: Date }>) | undefined =
+      async () => ({
+        accessToken: 'signed.access.token',
+        expiresAt: new Date('2026-08-10T18:15:00.000Z'),
+      }),
+    ttlMinutes = 1_440,
+  ) {
+    return harness.service.withResolvedTenant(
+      'demo-store',
+      ({ tenantAccess }) =>
+        tenantAccess.rotateOwnerRefreshSession(
+          {
+            presentedRefreshTokenHash: Buffer.from(presentedHash),
+            replacementRefreshTokenHash: Buffer.from(replacementHash),
+            ttlMinutes,
+          },
+          issuer,
+        ),
     );
   }
 
@@ -879,6 +1231,7 @@ describe('StoreTenantAccessService activation transactions', () => {
         let draft: TenantActivationState | undefined;
         let ownerLockAcquired = false;
         const acquireOwnerLock = async () => {
+          if (ownerLockAcquired) return;
           const precedingOwnerLock = ownerLockTail;
           ownerLockTail = new Promise<void>((resolve) => {
             release = resolve;
@@ -898,6 +1251,9 @@ describe('StoreTenantAccessService activation transactions', () => {
 
         try {
           const result = await operation(transaction);
+          if (hooks.transactionCommitError) {
+            throw hooks.transactionCommitError;
+          }
           state = requireDraft();
           return result;
         } finally {
@@ -928,10 +1284,29 @@ describe('StoreTenantAccessService activation transactions', () => {
 
           await acquireOwnerLock();
           const draft = requireDraft();
+          if (queryText.includes('employee_refresh_sessions')) {
+            events.push('lock-refresh-session');
+            lockQueryText = queryText;
+            lockQueryValues = values;
+            const presentedHash = values[0];
+            const session = Buffer.isBuffer(presentedHash)
+              ? draft.sessions.find((candidate) =>
+                  candidate.refreshTokenHash.equals(presentedHash),
+                )
+              : undefined;
+            return session
+              ? [{ id: session.id, employeeId: session.employeeId }]
+              : [];
+          }
+
           events.push('lock-owner');
           lockQueryText = queryText;
           lockQueryValues = values;
-          return draft.owner.isStoreOwner ? [{ id: draft.owner.id }] : [];
+          if (hooks.ownerLockMissing) return [];
+          return queryText.includes('is_store_owner') &&
+            !draft.owner.isStoreOwner
+            ? []
+            : [{ id: draft.owner.id }];
         }),
         tenantIdentity: {
           findUnique: jest.fn(async () => {
@@ -1088,6 +1463,27 @@ describe('StoreTenantAccessService activation transactions', () => {
           }),
         },
         employeeRefreshSession: {
+          findUnique: jest.fn(async ({ where }) => {
+            const draft = requireDraft();
+            events.push('read-refresh-session');
+            const session = draft.sessions.find(
+              (candidate) => candidate.id === where.id,
+            );
+            if (!session) return null;
+            const cloned = {
+              ...session,
+              refreshTokenHash: Buffer.from(session.refreshTokenHash),
+              issuedAt: new Date(session.issuedAt),
+              expiresAt: new Date(session.expiresAt),
+              revokedAt: session.revokedAt
+                ? new Date(session.revokedAt)
+                : null,
+            };
+            if (hooks.sessionReadHash) {
+              cloned.refreshTokenHash = Buffer.from(hooks.sessionReadHash);
+            }
+            return cloned;
+          }),
           create: jest.fn(async ({ data }) => {
             const draft = requireDraft();
             events.push('create-refresh-session');
@@ -1120,6 +1516,54 @@ describe('StoreTenantAccessService activation transactions', () => {
               revokedAt: null,
             });
             return { id };
+          }),
+          updateMany: jest.fn(async ({ where, data }) => {
+            const draft = requireDraft();
+            events.push(
+              data.revokedAt ? 'revoke-refresh-session' : 'rotate-refresh-session',
+            );
+            if (hooks.sessionUpdateError) throw hooks.sessionUpdateError;
+            if (hooks.sessionUpdateFenceCount === 0) return { count: 0 };
+            const session = draft.sessions.find(
+              (candidate) =>
+                candidate.id === where.id &&
+                candidate.employeeId === where.employeeId &&
+                candidate.refreshTokenHash.equals(where.refreshTokenHash) &&
+                candidate.revokedAt === null &&
+                (where.expiresAt === undefined ||
+                  candidate.expiresAt.getTime() >
+                    where.expiresAt.gt.getTime()),
+            );
+            if (!session) return { count: 0 };
+            if (data.revokedAt) {
+              session.revokedAt = new Date(data.revokedAt);
+              return { count: 1 };
+            }
+            if (
+              data.refreshTokenHash &&
+              draft.sessions.some(
+                (candidate) =>
+                  candidate.id !== session.id &&
+                  candidate.refreshTokenHash.equals(data.refreshTokenHash),
+              )
+            ) {
+              throw {
+                code: 'P2002',
+                meta: {
+                  modelName: 'EmployeeRefreshSession',
+                  driverAdapterError: {
+                    cause: {
+                      kind: 'UniqueConstraintViolation',
+                      constraint: { fields: ['refresh_token_hash'] },
+                    },
+                  },
+                },
+              };
+            }
+            session.refreshTokenHash = Buffer.from(data.refreshTokenHash);
+            session.issuedAt = new Date(data.issuedAt);
+            session.expiresAt = new Date(data.expiresAt);
+            return { count: 1 };
           }),
         },
       };
@@ -1245,6 +1689,11 @@ interface TransactionHooks {
   advisoryClockTime?: Date;
   transactionClockTime?: Date;
   sessionCreateError?: unknown;
+  sessionUpdateError?: unknown;
+  sessionUpdateFenceCount?: number;
+  sessionReadHash?: Buffer;
+  transactionCommitError?: unknown;
+  ownerLockMissing?: boolean;
 }
 
 interface TransactionHarness {

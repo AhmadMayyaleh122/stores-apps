@@ -11,6 +11,7 @@ import { PasswordPolicyService } from './services/password-policy.service';
 import { RefreshTokenService } from './services/refresh-token.service';
 import { StoreAccessTokenService } from './services/store-access-token.service';
 import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
+import { StoreAuthenticationRefreshService } from './services/store-authentication-refresh.service';
 import { StoreAuthSessionConfigService } from './services/store-auth-session-config.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
@@ -32,6 +33,7 @@ import { StoreAuthController } from './store-auth.controller';
     RefreshTokenService,
     StoreAccessTokenService,
     StoreAuthenticationSessionService,
+    StoreAuthenticationRefreshService,
     TenantProvisioningConfigService,
     TenantCredentialEncryptionService,
     StoreTenantAccessService,
@@ -45,6 +47,7 @@ import { StoreAuthController } from './store-auth.controller';
     StoreOwnerLoginService,
     StoreAccessTokenService,
     StoreAuthenticationSessionService,
+    StoreAuthenticationRefreshService,
     StoreTenantAccessService,
   ],
 })

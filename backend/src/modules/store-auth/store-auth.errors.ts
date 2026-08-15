@@ -31,6 +31,8 @@ export enum StoreAuthErrorCode {
   REFRESH_TOKEN_INVALID = 'STORE_AUTH_REFRESH_TOKEN_INVALID',
   AUTH_SESSION_OWNER_INVALID = 'STORE_AUTH_AUTH_SESSION_OWNER_INVALID',
   AUTH_SESSION_CREATION_FAILED = 'STORE_AUTH_AUTH_SESSION_CREATION_FAILED',
+  AUTH_REFRESH_INVALID = 'STORE_AUTH_AUTH_REFRESH_INVALID',
+  AUTH_REFRESH_FAILED = 'STORE_AUTH_AUTH_REFRESH_FAILED',
 }
 
 export const STORE_AUTH_SAFE_MESSAGES = {
@@ -82,6 +84,10 @@ export const STORE_AUTH_SAFE_MESSAGES = {
     'Store owner is not eligible for an authentication session.',
   [StoreAuthErrorCode.AUTH_SESSION_CREATION_FAILED]:
     'Store authentication session could not be created.',
+  [StoreAuthErrorCode.AUTH_REFRESH_INVALID]:
+    'Store refresh authentication is invalid or expired.',
+  [StoreAuthErrorCode.AUTH_REFRESH_FAILED]:
+    'Store authentication could not be refreshed.',
 } as const satisfies Record<StoreAuthErrorCode, string>;
 
 export class StoreAuthError extends Error {

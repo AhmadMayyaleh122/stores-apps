@@ -57,6 +57,7 @@ describe('StoreOwnerActivationService', () => {
       issueOwnerActivation,
       activateOwner,
       createOwnerRefreshSession: jest.fn(),
+      rotateOwnerRefreshSession: jest.fn(),
     });
     withResolvedTenant = jest.fn(
       async (

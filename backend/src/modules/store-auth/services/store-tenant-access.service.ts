@@ -66,6 +66,11 @@ interface LockedOwnerRow {
   id: string;
 }
 
+interface LockedRefreshSessionRow {
+  id: string;
+  employeeId: string;
+}
+
 interface DatabaseClockRow {
   authoritativeTime: Date;
 }
@@ -109,6 +114,15 @@ interface OwnerLoginRecord {
     employeeId: string;
     passwordHash: string;
   } | null;
+}
+
+interface RefreshSessionRecord {
+  id: string;
+  employeeId: string;
+  refreshTokenHash: Uint8Array;
+  issuedAt: Date;
+  expiresAt: Date;
+  revokedAt: Date | null;
 }
 
 interface TenantStoreAuthTransactionBoundary {
@@ -174,6 +188,10 @@ interface TenantStoreAuthTransactionBoundary {
     }): Promise<{ id: string }>;
   };
   employeeRefreshSession: {
+    findUnique(options: {
+      where: { id: string };
+      select: typeof REFRESH_SESSION_SELECT;
+    }): Promise<RefreshSessionRecord | null>;
     create(options: {
       data: {
         employeeId: string;
@@ -183,6 +201,21 @@ interface TenantStoreAuthTransactionBoundary {
       };
       select: { id: true };
     }): Promise<{ id: string }>;
+    updateMany(options: {
+      where: {
+        id: string;
+        employeeId: string;
+        refreshTokenHash: Buffer;
+        revokedAt: null;
+        expiresAt?: { gt: Date };
+      };
+      data: {
+        refreshTokenHash?: Buffer;
+        issuedAt?: Date;
+        expiresAt?: Date;
+        revokedAt?: Date;
+      };
+    }): Promise<{ count: number }>;
   };
 }
 
@@ -255,6 +288,10 @@ export interface StoreAuthTenantAccess {
   createOwnerRefreshSession(
     input: CreateOwnerRefreshSessionInput,
   ): Promise<CreateOwnerRefreshSessionOutcome>;
+  rotateOwnerRefreshSession(
+    input: RotateOwnerRefreshSessionInput,
+    issueAccessToken: RotatedOwnerAccessTokenIssuer,
+  ): Promise<RotateOwnerRefreshSessionOutcome>;
 }
 
 export interface FindOwnerLoginCredentialInput {
@@ -295,6 +332,40 @@ export interface OwnerRefreshSessionCreatedOutcome {
 
 export type CreateOwnerRefreshSessionOutcome =
   | OwnerRefreshSessionCreatedOutcome
+  | 'REFRESH_TOKEN_HASH_COLLISION';
+
+export interface RotateOwnerRefreshSessionInput {
+  readonly presentedRefreshTokenHash: Buffer;
+  readonly replacementRefreshTokenHash: Buffer;
+  readonly ttlMinutes: number;
+}
+
+export interface RotatedOwnerAccessTokenInput {
+  readonly ownerId: string;
+  readonly storeId: string;
+  readonly sessionId: string;
+  readonly issuedAt: Date;
+}
+
+export interface RotatedOwnerAccessToken {
+  readonly accessToken: string;
+  readonly expiresAt: Date;
+}
+
+export type RotatedOwnerAccessTokenIssuer = (
+  input: RotatedOwnerAccessTokenInput,
+) => Promise<RotatedOwnerAccessToken>;
+
+export interface OwnerRefreshSessionRotatedOutcome {
+  readonly accessToken: string;
+  readonly accessTokenExpiresAt: Date;
+  readonly refreshTokenExpiresAt: Date;
+}
+
+export type RotateOwnerRefreshSessionOutcome =
+  | OwnerRefreshSessionRotatedOutcome
+  | 'INVALID_REFRESH'
+  | 'INVALID_REFRESH_REVOKED'
   | 'REFRESH_TOKEN_HASH_COLLISION';
 
 export interface OwnerActivationIssuedOutcome {
@@ -571,6 +642,15 @@ const ACTIVATION_TOKEN_SELECT = {
   revokedAt: true,
 } as const;
 
+const REFRESH_SESSION_SELECT = {
+  id: true,
+  employeeId: true,
+  refreshTokenHash: true,
+  issuedAt: true,
+  expiresAt: true,
+  revokedAt: true,
+} as const;
+
 function createStoreAuthTenantAccess(
   tenantPrisma: TenantPrismaClient,
   storeId: string,
@@ -628,8 +708,206 @@ function createStoreAuthTenantAccess(
 
         return outcome;
       },
+      rotateOwnerRefreshSession: async (
+        input: RotateOwnerRefreshSessionInput,
+        issueAccessToken: RotatedOwnerAccessTokenIssuer,
+      ) => {
+        const outcome = await rotateOwnerRefreshSessionMutation(
+          internalClient,
+          storeId,
+          input,
+          issueAccessToken,
+        );
+
+        if (
+          outcome !== 'INVALID_REFRESH' &&
+          outcome !== 'REFRESH_TOKEN_HASH_COLLISION'
+        ) {
+          markCommittedSecurityMutation();
+        }
+
+        return outcome;
+      },
     }),
   ) as StoreAuthTenantAccess;
+}
+
+async function rotateOwnerRefreshSessionMutation(
+  tenantPrisma: TenantStoreAuthPrismaClientBoundary,
+  storeId: string,
+  input: RotateOwnerRefreshSessionInput,
+  issueAccessToken: RotatedOwnerAccessTokenIssuer,
+): Promise<RotateOwnerRefreshSessionOutcome> {
+  let presentedHash: Buffer | undefined;
+  let replacementHash: Buffer | undefined;
+
+  try {
+    presentedHash = copyRefreshTokenHash(
+      input.presentedRefreshTokenHash,
+    );
+    replacementHash = copyRefreshTokenHash(
+      input.replacementRefreshTokenHash,
+    );
+    const usablePresentedHash = presentedHash;
+    const usableReplacementHash = replacementHash;
+    const ttlMinutes = requireSessionTtl(input.ttlMinutes);
+
+    if (
+      usablePresentedHash.equals(usableReplacementHash) ||
+      typeof issueAccessToken !== 'function'
+    ) {
+      throw refreshFailed();
+    }
+
+    return await tenantPrisma.$transaction(async (transaction) => {
+      const lockedSessions = await transaction.$queryRaw<
+        LockedRefreshSessionRow[]
+      >`
+        SELECT "id", "employee_id" AS "employeeId"
+        FROM "employee_refresh_sessions"
+        WHERE "refresh_token_hash" = ${usablePresentedHash}
+        FOR UPDATE
+      `;
+
+      if (lockedSessions.length !== 1) {
+        return 'INVALID_REFRESH';
+      }
+
+      let sessionId: string;
+      let ownerId: string;
+
+      try {
+        sessionId = normalizeCanonicalUuid(lockedSessions[0].id);
+        ownerId = normalizeCanonicalUuid(lockedSessions[0].employeeId);
+      } catch {
+        return 'INVALID_REFRESH';
+      }
+
+      const lockedOwners = await transaction.$queryRaw<LockedOwnerRow[]>`
+        SELECT "id"
+        FROM "employees"
+        WHERE "id" = ${ownerId}
+        FOR UPDATE
+      `;
+
+      if (
+        lockedOwners.length !== 1 ||
+        normalizeCanonicalUuid(lockedOwners[0].id) !== ownerId
+      ) {
+        return 'INVALID_REFRESH';
+      }
+
+      await requireTransactionTenantIdentity(
+        transaction,
+        storeId,
+        StoreAuthErrorCode.AUTH_REFRESH_INVALID,
+      );
+      const session = await transaction.employeeRefreshSession.findUnique({
+        where: { id: sessionId },
+        select: REFRESH_SESSION_SELECT,
+      });
+      const owner = await transaction.employee.findUnique({
+        where: { id: ownerId },
+        select: ACTIVATION_OWNER_SELECT,
+      });
+      const refreshTime = await readAuthoritativeRefreshTime(transaction);
+
+      if (
+        !isMatchingRefreshSession(
+          session,
+          sessionId,
+          ownerId,
+          usablePresentedHash,
+          refreshTime,
+        )
+      ) {
+        return 'INVALID_REFRESH';
+      }
+
+      if (!isEligibleActiveSessionOwner(owner, storeId, ownerId)) {
+        const revoked = await transaction.employeeRefreshSession.updateMany({
+          where: {
+            id: sessionId,
+            employeeId: ownerId,
+            refreshTokenHash: usablePresentedHash,
+            revokedAt: null,
+            expiresAt: { gt: refreshTime },
+          },
+          data: { revokedAt: refreshTime },
+        });
+
+        if (revoked.count !== 1) {
+          throw refreshFailed();
+        }
+
+        return 'INVALID_REFRESH_REVOKED';
+      }
+
+      const replacementExpiresAt = calculateRefreshExpiration(
+        refreshTime,
+        ttlMinutes,
+      );
+      const rotated = await transaction.employeeRefreshSession.updateMany({
+        where: {
+          id: sessionId,
+          employeeId: ownerId,
+          refreshTokenHash: usablePresentedHash,
+          revokedAt: null,
+          expiresAt: { gt: refreshTime },
+        },
+        data: {
+          refreshTokenHash: usableReplacementHash,
+          issuedAt: refreshTime,
+          expiresAt: replacementExpiresAt,
+        },
+      });
+
+      if (rotated.count !== 1) {
+        throw refreshInvalid();
+      }
+
+      const accessToken = await issueAccessToken(
+        Object.freeze({
+          ownerId,
+          storeId,
+          sessionId,
+          issuedAt: new Date(refreshTime.getTime()),
+        }),
+      );
+      const accessTokenExpiresAt = requireValidAccessTokenResult(
+        accessToken,
+        refreshTime,
+      );
+
+      return Object.freeze({
+        accessToken: accessToken.accessToken,
+        accessTokenExpiresAt,
+        refreshTokenExpiresAt: new Date(replacementExpiresAt.getTime()),
+      });
+    });
+  } catch (error) {
+    if (
+      isUniqueConstraintViolationFor(
+        error,
+        'EmployeeRefreshSession',
+        REFRESH_TOKEN_HASH_UNIQUE_TARGETS,
+      )
+    ) {
+      return 'REFRESH_TOKEN_HASH_COLLISION';
+    }
+
+    if (
+      error instanceof StoreAuthError &&
+      error.code === StoreAuthErrorCode.AUTH_REFRESH_INVALID
+    ) {
+      throw createStoreAuthError(error.code);
+    }
+
+    throw refreshFailed();
+  } finally {
+    presentedHash?.fill(0);
+    replacementHash?.fill(0);
+  }
 }
 
 async function createOwnerRefreshSessionMutation(
@@ -745,6 +1023,32 @@ function isEligibleActiveSessionOwner(
       owner.role.isSystem === true &&
       normalizeCanonicalUuid(owner.credential?.employeeId as string) ===
         expectedOwnerId
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isMatchingRefreshSession(
+  session: RefreshSessionRecord | null,
+  expectedSessionId: string,
+  expectedOwnerId: string,
+  expectedHash: Buffer,
+  refreshTime: Date,
+): session is RefreshSessionRecord {
+  try {
+    return (
+      session !== null &&
+      normalizeCanonicalUuid(session.id) === expectedSessionId &&
+      normalizeCanonicalUuid(session.employeeId) === expectedOwnerId &&
+      Buffer.from(session.refreshTokenHash).equals(expectedHash) &&
+      session.issuedAt instanceof Date &&
+      Number.isFinite(session.issuedAt.getTime()) &&
+      session.issuedAt.getTime() <= refreshTime.getTime() &&
+      session.expiresAt instanceof Date &&
+      Number.isFinite(session.expiresAt.getTime()) &&
+      session.expiresAt.getTime() > refreshTime.getTime() &&
+      session.revokedAt === null
     );
   } catch {
     return false;
@@ -1097,7 +1401,8 @@ async function requireTransactionTenantIdentity(
   invalidCode:
     | StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT
     | StoreAuthErrorCode.OWNER_ACTIVATION_INVALID
-    | StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID,
+    | StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID
+    | StoreAuthErrorCode.AUTH_REFRESH_INVALID,
 ): Promise<void> {
   const identity = await transaction.tenantIdentity.findUnique({
     where: { id: 1 },
@@ -1201,6 +1506,29 @@ async function readAuthoritativeSessionTime(
   return new Date(authoritativeTime.getTime());
 }
 
+async function readAuthoritativeRefreshTime(
+  client: Pick<TenantStoreAuthTransactionBoundary, '$queryRaw'>,
+): Promise<Date> {
+  const rows = await client.$queryRaw<DatabaseClockRow[]>`
+    SELECT date_trunc(
+      'seconds',
+      clock_timestamp() AT TIME ZONE 'UTC'
+    ) AS "authoritativeTime"
+  `;
+  const authoritativeTime = rows[0]?.authoritativeTime;
+
+  if (
+    rows.length !== 1 ||
+    !(authoritativeTime instanceof Date) ||
+    !Number.isFinite(authoritativeTime.getTime()) ||
+    authoritativeTime.getTime() % 1_000 !== 0
+  ) {
+    throw refreshFailed();
+  }
+
+  return new Date(authoritativeTime.getTime());
+}
+
 function requirePositiveSafeInteger(value: unknown): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) {
     throw issuanceFailed();
@@ -1252,6 +1580,49 @@ function calculateSessionExpiration(
   }
 
   return expiresAt;
+}
+
+function calculateRefreshExpiration(
+  issuedAt: Date,
+  ttlMinutes: number,
+): Date {
+  const ttlMilliseconds = ttlMinutes * 60_000;
+  const expiresAtMilliseconds = issuedAt.getTime() + ttlMilliseconds;
+  const expiresAt = new Date(expiresAtMilliseconds);
+
+  if (
+    !Number.isSafeInteger(ttlMilliseconds) ||
+    !Number.isSafeInteger(expiresAtMilliseconds) ||
+    !Number.isFinite(expiresAt.getTime()) ||
+    expiresAt.getTime() <= issuedAt.getTime()
+  ) {
+    throw refreshFailed();
+  }
+
+  return expiresAt;
+}
+
+function requireValidAccessTokenResult(
+  value: unknown,
+  issuedAt: Date,
+): Date {
+  if (typeof value !== 'object' || value === null) {
+    throw refreshFailed();
+  }
+
+  const result = value as Record<string, unknown>;
+
+  if (
+    typeof result.accessToken !== 'string' ||
+    result.accessToken.length === 0 ||
+    !(result.expiresAt instanceof Date) ||
+    !Number.isFinite(result.expiresAt.getTime()) ||
+    result.expiresAt.getTime() <= issuedAt.getTime()
+  ) {
+    throw refreshFailed();
+  }
+
+  return new Date(result.expiresAt.getTime());
 }
 
 const TOKEN_HASH_UNIQUE_TARGETS = new Set([
@@ -1374,6 +1745,14 @@ function sessionCreationFailed(): StoreAuthError {
   return createStoreAuthError(
     StoreAuthErrorCode.AUTH_SESSION_CREATION_FAILED,
   );
+}
+
+function refreshInvalid(): StoreAuthError {
+  return createStoreAuthError(StoreAuthErrorCode.AUTH_REFRESH_INVALID);
+}
+
+function refreshFailed(): StoreAuthError {
+  return createStoreAuthError(StoreAuthErrorCode.AUTH_REFRESH_FAILED);
 }
 
 function requireCanonicalStoreSlug(value: unknown): string {

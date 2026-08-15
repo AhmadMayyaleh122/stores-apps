@@ -12,6 +12,7 @@ import { PasswordPolicyService } from './services/password-policy.service';
 import { RefreshTokenService } from './services/refresh-token.service';
 import { StoreAccessTokenService } from './services/store-access-token.service';
 import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
+import { StoreAuthenticationRefreshService } from './services/store-authentication-refresh.service';
 import { StoreAuthSessionConfigService } from './services/store-auth-session-config.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
@@ -30,6 +31,7 @@ describe('StoreAuthModule', () => {
     StoreOwnerLoginService,
     StoreAccessTokenService,
     StoreAuthenticationSessionService,
+    StoreAuthenticationRefreshService,
     StoreTenantAccessService,
   ];
 
@@ -70,6 +72,7 @@ describe('StoreAuthModule', () => {
       RefreshTokenService,
       StoreAccessTokenService,
       StoreAuthenticationSessionService,
+      StoreAuthenticationRefreshService,
       TenantProvisioningConfigService,
       TenantCredentialEncryptionService,
       StoreTenantAccessService,
@@ -100,6 +103,9 @@ describe('StoreAuthModule', () => {
       );
       expect(moduleRef.get(StoreAuthenticationSessionService)).toBeInstanceOf(
         StoreAuthenticationSessionService,
+      );
+      expect(moduleRef.get(StoreAuthenticationRefreshService)).toBeInstanceOf(
+        StoreAuthenticationRefreshService,
       );
       expect(moduleRef.get(StoreAuthController)).toBeInstanceOf(
         StoreAuthController,
