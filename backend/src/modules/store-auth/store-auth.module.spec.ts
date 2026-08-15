@@ -1,5 +1,6 @@
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ConfigModule } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 
 import { DatabaseModule } from '../../database/database.module';
@@ -8,6 +9,10 @@ import { TenantProvisioningConfigService } from '../tenant-provisioning/services
 import { ActivationTokenService } from './services/activation-token.service';
 import { PasswordHasherService } from './services/password-hasher.service';
 import { PasswordPolicyService } from './services/password-policy.service';
+import { RefreshTokenService } from './services/refresh-token.service';
+import { StoreAccessTokenService } from './services/store-access-token.service';
+import { StoreAuthenticationSessionService } from './services/store-authentication-session.service';
+import { StoreAuthSessionConfigService } from './services/store-auth-session-config.service';
 import { StoreOwnerActivationConfigService } from './services/store-owner-activation-config.service';
 import { StoreOwnerActivationService } from './services/store-owner-activation.service';
 import { StoreOwnerLoginService } from './services/store-owner-login.service';
@@ -22,10 +27,12 @@ describe('StoreAuthModule', () => {
     StoreOwnerActivationConfigService,
     StoreOwnerActivationService,
     StoreOwnerLoginService,
+    StoreAccessTokenService,
+    StoreAuthenticationSessionService,
     StoreTenantAccessService,
   ];
 
-  it('imports only the narrow configuration and Master database modules', () => {
+  it('imports only the narrow configuration, Master database, and JWT modules', () => {
     const imports = Reflect.getMetadata(
       MODULE_METADATA.IMPORTS,
       StoreAuthModule,
@@ -35,7 +42,9 @@ describe('StoreAuthModule', () => {
       StoreAuthModule,
     ) as unknown[] | undefined;
 
-    expect(imports).toEqual([ConfigModule, DatabaseModule]);
+    expect(imports).toHaveLength(3);
+    expect(imports.slice(0, 2)).toEqual([ConfigModule, DatabaseModule]);
+    expect(imports[2]).toMatchObject({ module: JwtModule });
     expect(controllers ?? []).toEqual([]);
   });
 
@@ -56,6 +65,10 @@ describe('StoreAuthModule', () => {
       StoreOwnerActivationConfigService,
       StoreOwnerActivationService,
       StoreOwnerLoginService,
+      StoreAuthSessionConfigService,
+      RefreshTokenService,
+      StoreAccessTokenService,
+      StoreAuthenticationSessionService,
       TenantProvisioningConfigService,
       TenantCredentialEncryptionService,
       StoreTenantAccessService,
@@ -80,6 +93,12 @@ describe('StoreAuthModule', () => {
       );
       expect(moduleRef.get(StoreOwnerLoginService)).toBeInstanceOf(
         StoreOwnerLoginService,
+      );
+      expect(moduleRef.get(StoreAccessTokenService)).toBeInstanceOf(
+        StoreAccessTokenService,
+      );
+      expect(moduleRef.get(StoreAuthenticationSessionService)).toBeInstanceOf(
+        StoreAuthenticationSessionService,
       );
       await moduleRef.close();
     } finally {

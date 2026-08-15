@@ -56,6 +56,7 @@ describe('StoreOwnerActivationService', () => {
       checkOwnerActivationEligibility,
       issueOwnerActivation,
       activateOwner,
+      createOwnerRefreshSession: jest.fn(),
     });
     withResolvedTenant = jest.fn(
       async (

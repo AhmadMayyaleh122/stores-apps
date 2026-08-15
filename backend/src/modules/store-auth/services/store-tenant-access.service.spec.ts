@@ -676,10 +676,12 @@ describe('StoreTenantAccessService', () => {
           checkOwnerActivationEligibility: expect.any(Function),
           issueOwnerActivation: expect.any(Function),
           activateOwner: expect.any(Function),
+          createOwnerRefreshSession: expect.any(Function),
         });
         expect(Object.keys(context.tenantAccess).sort()).toEqual([
           'activateOwner',
           'checkOwnerActivationEligibility',
+          'createOwnerRefreshSession',
           'findOwnerLoginCredential',
           'issueOwnerActivation',
           'kind',

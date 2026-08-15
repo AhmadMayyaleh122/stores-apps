@@ -21,6 +21,16 @@ export enum StoreAuthErrorCode {
   OWNER_ACTIVATION_INVALID = 'STORE_AUTH_OWNER_ACTIVATION_INVALID',
   OWNER_ACTIVATION_FAILED = 'STORE_AUTH_OWNER_ACTIVATION_FAILED',
   INVALID_STORE_CREDENTIALS = 'STORE_AUTH_INVALID_STORE_CREDENTIALS',
+  AUTHENTICATION_CONFIGURATION_INVALID =
+    'STORE_AUTH_AUTHENTICATION_CONFIGURATION_INVALID',
+  ACCESS_TOKEN_ISSUANCE_FAILED = 'STORE_AUTH_ACCESS_TOKEN_ISSUANCE_FAILED',
+  ACCESS_TOKEN_INVALID = 'STORE_AUTH_ACCESS_TOKEN_INVALID',
+  REFRESH_TOKEN_GENERATION_FAILED =
+    'STORE_AUTH_REFRESH_TOKEN_GENERATION_FAILED',
+  REFRESH_TOKEN_HASHING_FAILED = 'STORE_AUTH_REFRESH_TOKEN_HASHING_FAILED',
+  REFRESH_TOKEN_INVALID = 'STORE_AUTH_REFRESH_TOKEN_INVALID',
+  AUTH_SESSION_OWNER_INVALID = 'STORE_AUTH_AUTH_SESSION_OWNER_INVALID',
+  AUTH_SESSION_CREATION_FAILED = 'STORE_AUTH_AUTH_SESSION_CREATION_FAILED',
 }
 
 export const STORE_AUTH_SAFE_MESSAGES = {
@@ -56,6 +66,22 @@ export const STORE_AUTH_SAFE_MESSAGES = {
     'Store owner activation could not be completed.',
   [StoreAuthErrorCode.INVALID_STORE_CREDENTIALS]:
     'Store credentials are invalid.',
+  [StoreAuthErrorCode.AUTHENTICATION_CONFIGURATION_INVALID]:
+    'Store authentication configuration is invalid.',
+  [StoreAuthErrorCode.ACCESS_TOKEN_ISSUANCE_FAILED]:
+    'Store access token could not be issued.',
+  [StoreAuthErrorCode.ACCESS_TOKEN_INVALID]:
+    'Store access token is invalid or expired.',
+  [StoreAuthErrorCode.REFRESH_TOKEN_GENERATION_FAILED]:
+    'Store refresh token could not be generated.',
+  [StoreAuthErrorCode.REFRESH_TOKEN_HASHING_FAILED]:
+    'Store refresh token could not be secured.',
+  [StoreAuthErrorCode.REFRESH_TOKEN_INVALID]:
+    'Store refresh token is invalid.',
+  [StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID]:
+    'Store owner is not eligible for an authentication session.',
+  [StoreAuthErrorCode.AUTH_SESSION_CREATION_FAILED]:
+    'Store authentication session could not be created.',
 } as const satisfies Record<StoreAuthErrorCode, string>;
 
 export class StoreAuthError extends Error {

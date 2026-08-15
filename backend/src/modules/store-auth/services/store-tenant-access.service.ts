@@ -173,6 +173,17 @@ interface TenantStoreAuthTransactionBoundary {
       select: { id: true };
     }): Promise<{ id: string }>;
   };
+  employeeRefreshSession: {
+    create(options: {
+      data: {
+        employeeId: string;
+        refreshTokenHash: Buffer;
+        issuedAt: Date;
+        expiresAt: Date;
+      };
+      select: { id: true };
+    }): Promise<{ id: string }>;
+  };
 }
 
 interface TenantStoreAuthPrismaClientBoundary {
@@ -241,6 +252,9 @@ export interface StoreAuthTenantAccess {
     input: IssueOwnerActivationMutation,
   ): Promise<OwnerActivationIssuanceOutcome>;
   activateOwner(input: ActivateOwnerMutation): Promise<ActivateOwnerOutcome>;
+  createOwnerRefreshSession(
+    input: CreateOwnerRefreshSessionInput,
+  ): Promise<CreateOwnerRefreshSessionOutcome>;
 }
 
 export interface FindOwnerLoginCredentialInput {
@@ -266,6 +280,22 @@ export interface ActivateOwnerMutation {
   readonly tokenHash: Buffer;
   readonly passwordHash: string;
 }
+
+export interface CreateOwnerRefreshSessionInput {
+  readonly ownerId: string;
+  readonly refreshTokenHash: Buffer;
+  readonly ttlMinutes: number;
+}
+
+export interface OwnerRefreshSessionCreatedOutcome {
+  readonly sessionId: string;
+  readonly issuedAt: Date;
+  readonly expiresAt: Date;
+}
+
+export type CreateOwnerRefreshSessionOutcome =
+  | OwnerRefreshSessionCreatedOutcome
+  | 'REFRESH_TOKEN_HASH_COLLISION';
 
 export interface OwnerActivationIssuedOutcome {
   readonly issuedAt: Date;
@@ -583,8 +613,142 @@ function createStoreAuthTenantAccess(
         markCommittedSecurityMutation();
         return outcome;
       },
+      createOwnerRefreshSession: async (
+        input: CreateOwnerRefreshSessionInput,
+      ) => {
+        const outcome = await createOwnerRefreshSessionMutation(
+          internalClient,
+          storeId,
+          input,
+        );
+
+        if (outcome !== 'REFRESH_TOKEN_HASH_COLLISION') {
+          markCommittedSecurityMutation();
+        }
+
+        return outcome;
+      },
     }),
   ) as StoreAuthTenantAccess;
+}
+
+async function createOwnerRefreshSessionMutation(
+  tenantPrisma: TenantStoreAuthPrismaClientBoundary,
+  storeId: string,
+  input: CreateOwnerRefreshSessionInput,
+): Promise<CreateOwnerRefreshSessionOutcome> {
+  const refreshTokenHash = copyRefreshTokenHash(input.refreshTokenHash);
+
+  try {
+    const ownerId = normalizeCanonicalUuid(input.ownerId);
+    const ttlMinutes = requireSessionTtl(input.ttlMinutes);
+
+    return await tenantPrisma.$transaction(async (transaction) => {
+      const owner = await lockAndRequireActiveSessionOwner(
+        transaction,
+        storeId,
+        ownerId,
+      );
+      const issuedAt = await readAuthoritativeSessionTime(transaction);
+      const expiresAt = calculateSessionExpiration(issuedAt, ttlMinutes);
+      const session = await transaction.employeeRefreshSession.create({
+        data: {
+          employeeId: owner.id,
+          refreshTokenHash,
+          issuedAt,
+          expiresAt,
+        },
+        select: { id: true },
+      });
+
+      return Object.freeze({
+        sessionId: normalizeCanonicalUuid(session.id),
+        issuedAt: new Date(issuedAt.getTime()),
+        expiresAt: new Date(expiresAt.getTime()),
+      });
+    });
+  } catch (error) {
+    if (
+      isUniqueConstraintViolationFor(
+        error,
+        'EmployeeRefreshSession',
+        REFRESH_TOKEN_HASH_UNIQUE_TARGETS,
+      )
+    ) {
+      return 'REFRESH_TOKEN_HASH_COLLISION';
+    }
+
+    if (
+      error instanceof StoreAuthError &&
+      error.code === StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID
+    ) {
+      throw createStoreAuthError(error.code);
+    }
+
+    throw sessionCreationFailed();
+  } finally {
+    refreshTokenHash.fill(0);
+  }
+}
+
+async function lockAndRequireActiveSessionOwner(
+  transaction: TenantStoreAuthTransactionBoundary,
+  storeId: string,
+  ownerId: string,
+): Promise<ActivationOwnerRecord> {
+  const lockedOwners = await transaction.$queryRaw<LockedOwnerRow[]>`
+    SELECT "id"
+    FROM "employees"
+    WHERE "id" = ${ownerId}
+      AND "is_store_owner" = TRUE
+    FOR UPDATE
+  `;
+
+  if (
+    lockedOwners.length !== 1 ||
+    normalizeCanonicalUuid(lockedOwners[0].id) !== ownerId
+  ) {
+    throw sessionOwnerInvalid();
+  }
+
+  await requireTransactionTenantIdentity(
+    transaction,
+    storeId,
+    StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID,
+  );
+  const owner = await transaction.employee.findUnique({
+    where: { id: ownerId },
+    select: ACTIVATION_OWNER_SELECT,
+  });
+
+  if (!isEligibleActiveSessionOwner(owner, storeId, ownerId)) {
+    throw sessionOwnerInvalid();
+  }
+
+  return owner;
+}
+
+function isEligibleActiveSessionOwner(
+  owner: ActivationOwnerRecord | null,
+  storeId: string,
+  expectedOwnerId: string,
+): owner is ActivationOwnerRecord {
+  try {
+    return (
+      owner !== null &&
+      normalizeCanonicalUuid(owner.id) === expectedOwnerId &&
+      owner.status === EmployeeStatus.ACTIVE &&
+      owner.isStoreOwner === true &&
+      normalizeCanonicalUuid(owner.masterStoreId as string) === storeId &&
+      owner.role.key === 'OWNER' &&
+      owner.role.name === 'Owner' &&
+      owner.role.isSystem === true &&
+      normalizeCanonicalUuid(owner.credential?.employeeId as string) ===
+        expectedOwnerId
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function findOwnerLoginCredential(
@@ -932,7 +1096,8 @@ async function requireTransactionTenantIdentity(
   storeId: string,
   invalidCode:
     | StoreAuthErrorCode.OWNER_ACTIVATION_ISSUANCE_CONFLICT
-    | StoreAuthErrorCode.OWNER_ACTIVATION_INVALID,
+    | StoreAuthErrorCode.OWNER_ACTIVATION_INVALID
+    | StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID,
 ): Promise<void> {
   const identity = await transaction.tenantIdentity.findUnique({
     where: { id: 1 },
@@ -982,6 +1147,14 @@ function copyTokenHash(
   return Buffer.from(value);
 }
 
+function copyRefreshTokenHash(value: unknown): Buffer {
+  if (!Buffer.isBuffer(value) || value.length !== 32) {
+    throw sessionCreationFailed();
+  }
+
+  return Buffer.from(value);
+}
+
 async function readAuthoritativeDatabaseTime(
   client: Pick<TenantStoreAuthTransactionBoundary, '$queryRaw'>,
   operation: 'issuance' | 'activation',
@@ -1000,6 +1173,29 @@ async function readAuthoritativeDatabaseTime(
     !Number.isFinite(authoritativeTime.getTime())
   ) {
     throw operation === 'issuance' ? issuanceFailed() : activationFailed();
+  }
+
+  return new Date(authoritativeTime.getTime());
+}
+
+async function readAuthoritativeSessionTime(
+  client: Pick<TenantStoreAuthTransactionBoundary, '$queryRaw'>,
+): Promise<Date> {
+  const rows = await client.$queryRaw<DatabaseClockRow[]>`
+    SELECT date_trunc(
+      'seconds',
+      clock_timestamp() AT TIME ZONE 'UTC'
+    ) AS "authoritativeTime"
+  `;
+  const authoritativeTime = rows[0]?.authoritativeTime;
+
+  if (
+    rows.length !== 1 ||
+    !(authoritativeTime instanceof Date) ||
+    !Number.isFinite(authoritativeTime.getTime()) ||
+    authoritativeTime.getTime() % 1_000 !== 0
+  ) {
+    throw sessionCreationFailed();
   }
 
   return new Date(authoritativeTime.getTime());
@@ -1030,6 +1226,34 @@ function calculateExpiration(issuedAt: Date, ttlMinutes: number): Date {
   return expiresAt;
 }
 
+function requireSessionTtl(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw sessionCreationFailed();
+  }
+
+  return value as number;
+}
+
+function calculateSessionExpiration(
+  issuedAt: Date,
+  ttlMinutes: number,
+): Date {
+  const ttlMilliseconds = ttlMinutes * 60_000;
+  const expiresAtMilliseconds = issuedAt.getTime() + ttlMilliseconds;
+  const expiresAt = new Date(expiresAtMilliseconds);
+
+  if (
+    !Number.isSafeInteger(ttlMilliseconds) ||
+    !Number.isSafeInteger(expiresAtMilliseconds) ||
+    !Number.isFinite(expiresAt.getTime()) ||
+    expiresAt.getTime() <= issuedAt.getTime()
+  ) {
+    throw sessionCreationFailed();
+  }
+
+  return expiresAt;
+}
+
 const TOKEN_HASH_UNIQUE_TARGETS = new Set([
   'tokenHash',
   'token_hash',
@@ -1042,9 +1266,18 @@ const CREDENTIAL_UNIQUE_TARGETS = new Set([
   'employee_credentials_pkey',
 ]);
 
+const REFRESH_TOKEN_HASH_UNIQUE_TARGETS = new Set([
+  'refreshTokenHash',
+  'refresh_token_hash',
+  'employee_refresh_sessions_refresh_token_hash_key',
+]);
+
 function isUniqueConstraintViolationFor(
   error: unknown,
-  expectedModelName: 'EmployeeActivationToken' | 'EmployeeCredential',
+  expectedModelName:
+    | 'EmployeeActivationToken'
+    | 'EmployeeCredential'
+    | 'EmployeeRefreshSession',
   allowedTargets: ReadonlySet<string>,
 ): boolean {
   if (
@@ -1131,6 +1364,16 @@ function activationInvalid(): StoreAuthError {
 
 function activationFailed(): StoreAuthError {
   return createStoreAuthError(StoreAuthErrorCode.OWNER_ACTIVATION_FAILED);
+}
+
+function sessionOwnerInvalid(): StoreAuthError {
+  return createStoreAuthError(StoreAuthErrorCode.AUTH_SESSION_OWNER_INVALID);
+}
+
+function sessionCreationFailed(): StoreAuthError {
+  return createStoreAuthError(
+    StoreAuthErrorCode.AUTH_SESSION_CREATION_FAILED,
+  );
 }
 
 function requireCanonicalStoreSlug(value: unknown): string {

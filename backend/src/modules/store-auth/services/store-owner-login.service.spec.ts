@@ -35,6 +35,7 @@ describe('StoreOwnerLoginService', () => {
       checkOwnerActivationEligibility: jest.fn(),
       issueOwnerActivation: jest.fn(),
       activateOwner: jest.fn(),
+      createOwnerRefreshSession: jest.fn(),
     });
     withResolvedTenant = jest.fn(async (_slug, operation) =>
       operation({ storeId, tenantAccess }),
